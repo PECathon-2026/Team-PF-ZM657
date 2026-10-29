@@ -3,25 +3,26 @@
 // Runs in the BROWSER ("use client"), because it uses state, events and IndexedDB.
 //
 // Data flow:
-//   FeedForm → loadFeed() → GET /api/feed → FeedList
+//   FeedForm → requestFeed() → lib/feed-client.ts → GET /api/feed → FeedList
 //   Save button → lib/db.ts (IndexedDB) → SavedArticles
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Rss, ShieldCheck } from "lucide-react";
 import { AIWorkspacePlaceholder } from "@/components/AIWorkspacePlaceholder";
 import { EmptyState } from "@/components/EmptyState";
 import { FeedForm } from "@/components/FeedForm";
-import { FeedList } from "@/components/FeedList";
+import { FeedList, FeedListSkeleton } from "@/components/FeedList";
 import { OfflineIndicator } from "@/components/OfflineIndicator";
 import { ReaderView } from "@/components/ReaderView";
 import { SavedArticles } from "@/components/SavedArticles";
 import { StatusMessage, type StatusKind } from "@/components/StatusMessage";
 import { getSavedArticles, removeSavedArticle, saveArticle } from "@/lib/db";
+import { loadFeed } from "@/lib/feed-client";
 import type { FeedInfo, FeedItem, ReadableArticle, SavedArticle } from "@/lib/feed-types";
 import { useOnlineStatus } from "@/lib/use-online-status";
-import { feedApiResponseSchema } from "@/lib/validation";
 
-type Status = { kind: StatusKind; message: string } | null;
+// `retryUrl` is set when trying the same URL again might help.
+type Status = { kind: StatusKind; message: string; retryUrl?: string } | null;
 
 export default function HomePage() {
   const isOnline = useOnlineStatus();
@@ -39,6 +40,10 @@ export default function HomePage() {
   // The article open in the reading view (null = closed).
   const [readingArticle, setReadingArticle] = useState<ReadableArticle | null>(null);
 
+  // The request in progress, so a newer request (or leaving the page) can cancel it.
+  const activeRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => activeRequest.current?.abort(), []);
+
   // Load saved articles once, when the page first opens.
   useEffect(() => {
     getSavedArticles()
@@ -47,39 +52,38 @@ export default function HomePage() {
       .finally(() => setIsLoadingSaved(false));
   }, []);
 
-  async function loadFeed(url: string) {
+  async function requestFeed(url: string) {
     if (!isOnline) {
       setStatus({
         kind: "error",
         message: "You are offline, so new feeds cannot be loaded. Your saved articles are still available.",
+        retryUrl: url,
       });
       return;
     }
 
+    // Cancel any older request so its answer cannot replace this one.
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+
     setIsLoadingFeed(true);
     setStatus({ kind: "loading", message: "Loading feed…" });
 
-    try {
-      const response = await fetch(`/api/feed?url=${encodeURIComponent(url)}`);
-      const parsed = feedApiResponseSchema.safeParse(await response.json());
+    const result = await loadFeed(url, { signal: controller.signal });
+    if (controller.signal.aborted) return; // a newer request took over
 
-      if (!parsed.success) {
-        setStatus({ kind: "error", message: "The server sent an unexpected response. Please try again." });
-      } else if (!parsed.data.success) {
-        setStatus({ kind: "error", message: parsed.data.error.message });
-      } else {
-        const { feed: info, items } = parsed.data;
-        setFeed({ info, items });
-        setStatus({
-          kind: "success",
-          message: `Loaded ${items.length} ${items.length === 1 ? "article" : "articles"} from ${info.title}.`,
-        });
-      }
-    } catch {
-      // fetch() itself failed: usually the connection dropped.
-      setStatus({ kind: "error", message: "Could not reach the NOVA Reader server. Check your connection." });
-    } finally {
-      setIsLoadingFeed(false);
+    activeRequest.current = null;
+    setIsLoadingFeed(false);
+
+    if (result.ok) {
+      setFeed({ info: result.feed, items: result.items });
+      setStatus({
+        kind: "success",
+        message: `Loaded ${result.items.length} ${result.items.length === 1 ? "article" : "articles"} from ${result.feed.title}.`,
+      });
+    } else {
+      setStatus({ kind: "error", message: result.message, retryUrl: result.retryable ? url : undefined });
     }
   }
 
@@ -100,6 +104,7 @@ export default function HomePage() {
   }
 
   const savedIds = new Set(saved.map((item) => item.id));
+  const retryUrl = isLoadingFeed ? undefined : status?.retryUrl;
 
   return (
     <>
@@ -127,24 +132,35 @@ export default function HomePage() {
 
       <main id="main" className="mx-auto grid max-w-6xl gap-8 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="min-w-0 space-y-4">
-          <FeedForm onSubmit={loadFeed} isLoading={isLoadingFeed} />
-          {status && <StatusMessage kind={status.kind} message={status.message} />}
-
-          {feed ? (
-            <FeedList
-              feed={feed.info}
-              items={feed.items}
-              savedIds={savedIds}
-              onToggleSave={toggleSave}
-              onRead={setReadingArticle}
-            />
-          ) : (
-            <EmptyState
-              icon={Rss}
-              title="No feed loaded yet"
-              message="Paste a feed URL above, or pick one of the examples, to see its latest articles."
+          <FeedForm onSubmit={requestFeed} isLoading={isLoadingFeed} />
+          {status && (
+            <StatusMessage
+              kind={status.kind}
+              message={status.message}
+              action={retryUrl ? { label: "Try again", onClick: () => requestFeed(retryUrl) } : undefined}
             />
           )}
+
+          {/* aria-busy only on the results, so the status message above is still announced. */}
+          <div aria-busy={isLoadingFeed}>
+            {isLoadingFeed && !feed ? (
+              <FeedListSkeleton />
+            ) : feed ? (
+              <FeedList
+                feed={feed.info}
+                items={feed.items}
+                savedIds={savedIds}
+                onToggleSave={toggleSave}
+                onRead={setReadingArticle}
+              />
+            ) : (
+              <EmptyState
+                icon={Rss}
+                title="No feed loaded yet"
+                message="Paste a feed URL above, or pick one of the examples, to see its latest articles."
+              />
+            )}
+          </div>
         </div>
 
         <aside className="space-y-6" aria-label="Saved articles and planned features">

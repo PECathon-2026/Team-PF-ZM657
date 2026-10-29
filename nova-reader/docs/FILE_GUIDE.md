@@ -27,7 +27,7 @@ The main page. It holds the app's **state** and connects all components.
 | `feed`, `status`, `isLoadingFeed` | The loaded feed and the loading/success/error message. |
 | `saved`, `savedError` | Saved articles from IndexedDB. |
 | `useEffect(...)` | Loads saved articles once when the page opens. |
-| `loadFeed(url)` | Refuses when offline; otherwise calls `/api/feed`, checks the JSON with Zod, and shows the feed or an error. |
+| `requestFeed(url)` | Refuses when offline; cancels any older request; calls `loadFeed()` from `lib/feed-client.ts`; shows the feed, or an error with **Try again** when retrying could help. |
 | `toggleSave(article)` | Saves or removes an article in IndexedDB and updates the list. |
 
 ### `app/globals.css` — Browser
@@ -41,7 +41,7 @@ Imports Tailwind and defines colour tokens (`--accent`, `--ink`, …) for light 
 | File | Purpose |
 | --- | --- |
 | `FeedForm.tsx` | The URL input. `submit()` validates with `validateFeedUrl()` and shows the error under the input (linked with `aria-describedby`). The button is disabled while loading. Has three example feeds. |
-| `FeedList.tsx` | Feed title, description, article count, website link, and the list of `ArticleCard`s. Shows an empty state if the feed has no articles. |
+| `FeedList.tsx` | Feed title, description, article count, website link, and the list of `ArticleCard`s. Shows an empty state if the feed has no articles. `FeedListSkeleton` shows grey placeholder cards while loading (hidden from screen readers). |
 | `ArticleCard.tsx` | One article: title, `<time>` date, author, 3-line summary, **Read**, **Save** (`aria-pressed` shows its state) and **Original** link (`rel="noopener noreferrer"`). The `compact` variant is used in the sidebar. |
 | `ReaderView.tsx` | The reading view, built on the native `<dialog>`: focus moves into it and **Escape** closes it. Shows `ArticleContent` when the feed sent HTML, otherwise the plain-text summary plus a note that links are not available. |
 | `ArticleContent.tsx` | Sanitizes `contentHtml` with `sanitizeArticleHtml()` and inserts the cleaned nodes into an empty `<div>` (`replaceChildren`). Link styles come from `.article-content` in `globals.css`. |
@@ -49,7 +49,7 @@ Imports Tailwind and defines colour tokens (`--accent`, `--ink`, …) for light 
 | `OfflineIndicator.tsx` | Badge showing "Online" or "Offline: saved articles only". `role="status"` makes screen readers announce changes. |
 | `AIWorkspacePlaceholder.tsx` | Three inactive cards for future local AI. Makes **no** network calls. |
 | `EmptyState.tsx` | A friendly "nothing here yet" box with an icon. |
-| `StatusMessage.tsx` | A coloured message. Errors use `role="alert"` (announced immediately); others use `role="status"`. |
+| `StatusMessage.tsx` | A coloured message. Errors use `role="alert"` (announced immediately); others use `role="status"`. Optional `action` adds a button, used for **Try again**. |
 
 **Safety rule used everywhere:** feed content is rendered as text with `{value}` in JSX, so React escapes it. The one exception is article HTML in `ArticleContent`, which is always sanitized by DOMPurify first. We never use `dangerouslySetInnerHTML`.
 
@@ -85,6 +85,13 @@ Items without a valid http(s) link are skipped, because there is nothing to open
 | `validateFeedUrl(input)` | Returns `{ ok: true, url }` or `{ ok: false, code, message }`. Checks: non-empty, max 2048 characters, a real URL, http(s) only, no `user:pass@`, not a blocked host. Never throws. |
 | `isBlockedHostname(host)` | Blocks `localhost`, `*.local`, `*.internal`, private/loopback/link-local IPv4 and IPv6. Text check only (see README security limitations). |
 | `feedApiResponseSchema` | Zod schema the browser uses to check the API's JSON before trusting it. |
+
+### `lib/feed-client.ts` — Browser
+
+| Function | What it does |
+| --- | --- |
+| `buildFeedApiUrl(url)` | `/api/feed?url=` + the encoded feed URL. |
+| `loadFeed(url, { signal?, timeoutMs?, fetchImpl? })` | Validates the URL, calls the Stage 3 route (never the feed site itself), checks the JSON with Zod. **Never throws**: returns `{ ok: true, feed, items }` or `{ ok: false, code, message, retryable }`. Adds browser-only codes `NETWORK_ERROR`, `CLIENT_TIMEOUT` (20 s), `BAD_RESPONSE` (e.g. an HTML error page) and `CANCELLED`. |
 
 ### `lib/db.ts` — Browser
 
@@ -149,6 +156,8 @@ Every file starts with `import "server-only"`, so Next.js fails the build if bro
 | `sanitize-html.test.ts` | Runs in jsdom. Absolute link (NASA case), relative links, text without links, unsafe schemes (`javascript:`, `data:`, `vbscript:`…), dangerous markup (scripts, event handlers, iframes, forms, SVG, styles), no remote images. |
 | `validation.test.ts` | Good URLs, trimming, empty/non-string input, malformed URLs, long URLs, bad protocols, credentials, localhost and private IPs, response schema. |
 | `feed-route.test.ts` | The API with fake DNS + network (real SSRF checks): success + schema, headers, safe redirects, missing/invalid URL, protocols, credentials, localhost, loopback, private IPs, metadata, unsafe IPv6, bad ports, hostnames resolving to private/mixed addresses, unsafe redirects, upstream errors, connection failures, timeout, oversized response, too many redirects, content types, malformed XML, non-feed XML, charsets, no leaked stack traces, rate limiting. |
+| `feed-client.test.ts` | URL encoding, calls the route not the feed, validation before calling, server errors, retryable vs permanent errors, non-JSON reply, wrong JSON shape, network failure, client timeout, cancel. |
+| `home-page.test.tsx` | Renders the real page (jsdom + React Testing Library + fake IndexedDB): labelled input, validation errors, Enter key, correct API URL, loading state + disabled button + skeleton, feed title/description/articles/author/date, missing fields, safe links, empty feed, feed text never rendered as HTML, error + **Try again**, network failure, non-JSON reply, no retry for permanent errors, previous feed kept on failure. |
 | `ssrf.test.ts` | IP policy (IPv4 + IPv6 special ranges), DNS validation, pinned lookup in both Node modes, DNS-rebinding simulation, port policy. |
 | `http-client.test.ts` | Real local HTTP server: body/headers, gzip, redirects not followed, Content-Length limit, streaming limit, gzip bomb, timeout, unknown encoding, refused connection, and proof that the real pinned lookup never lets a request reach 127.0.0.1. |
 

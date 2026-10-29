@@ -59,3 +59,19 @@ export function FeedList({ feed, items, savedIds, onToggleSave, onRead }: FeedLi
     </section>
   );
 }
+
+/** Grey placeholder cards shown while a feed is loading. Hidden from screen readers. */
+export function FeedListSkeleton() {
+  return (
+    <div aria-hidden="true" className="space-y-3" data-testid="feed-skeleton">
+      {[0, 1, 2].map((key) => (
+        <div key={key} className="animate-pulse rounded-xl border border-line bg-surface p-4">
+          <div className="h-5 w-2/3 rounded bg-surface-muted" />
+          <div className="mt-3 h-3 w-1/3 rounded bg-surface-muted" />
+          <div className="mt-4 h-3 w-full rounded bg-surface-muted" />
+          <div className="mt-2 h-3 w-5/6 rounded bg-surface-muted" />
+        </div>
+      ))}
+    </div>
+  );
+}

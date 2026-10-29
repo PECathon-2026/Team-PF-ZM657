@@ -14,7 +14,8 @@ NOVA Reader is a small, privacy-first and offline-friendly reader for RSS and At
 - URL validation in the browser **and** on the server (http/https only, no localhost or private-network addresses).
 - Server route `GET /api/feed` with SSRF protection (resolved A/AAAA records validated, connections pinned to the validated IPs, every redirect re-checked, web ports only), a 10-second overall timeout, a 2 MB limit (also after decompression), content-type and status checks, charset detection, an in-memory rate-limit placeholder and safe error codes.
 - Parser that normalizes RSS and Atom into one simple format: dates as ISO strings, relative links resolved, duplicates removed, stable IDs, at most 50 articles.
-- Article list with title, date, author, summary and a link to the original.
+- Article list with title, date, author, summary and a link to the original (opens in a new tab with `rel="noopener noreferrer"`).
+- Clear loading (disabled button, status message, skeleton), success, empty-feed and error states, with a **Try again** button for errors that may be temporary. Older requests are cancelled when a new one starts, and the browser gives up after 20 seconds.
 - Reading view (accessible dialog) showing the feed's content with **working, clearly styled links**. Feed HTML is sanitized with DOMPurify in the browser, relative links are resolved against the article URL, and only http(s) links are kept.
 - Save and remove articles, stored locally with Dexie.js + IndexedDB, persisting across refreshes.
 - Online/offline indicator that updates automatically.
@@ -65,6 +66,7 @@ nova-reader/
 │   ├── feed-types.ts         # shared TypeScript types
 │   ├── feed-parser.ts        # RSS/Atom → Feed (pure function)
 │   ├── validation.ts         # URL checks + API response schema (Zod)
+│   ├── feed-client.ts        # BROWSER: calls /api/feed, timeout, cancel, error mapping
 │   ├── db.ts                 # BROWSER: IndexedDB via Dexie
 │   ├── sanitize-html.ts      # BROWSER: DOMPurify + safe links
 │   ├── use-online-status.ts  # BROWSER: online/offline React hook
@@ -114,6 +116,8 @@ npm test             # run all tests once
 npm run test:run     # same, explicit name
 npm run test:watch   # re-run tests when files change
 ```
+
+Frontend tests (`tests/home-page.test.tsx`) render the real page in jsdom with React Testing Library and a fake `fetch`; `fake-indexeddb` stands in for the browser database.
 
 Tests never use the real internet. Route tests use a fake DNS resolver and a fake network that still runs the real SSRF checks; `tests/http-client.test.ts` uses a real local HTTP server for timeouts, size limits and gzip bombs.
 
