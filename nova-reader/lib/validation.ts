@@ -3,8 +3,9 @@
 //   - Browser: FeedForm checks the URL before sending it, for a fast error message.
 //   - Server:  the API route checks it again, because browser checks can be bypassed.
 
-import { z } from "zod";
 import { API_ERROR_CODES, type ApiErrorCode } from "./feed-types";
+import "./zod-setup"; // CSP-safe Zod settings (no eval) — must run before any schema is used
+import * as z from "zod";
 
 export const MAX_URL_LENGTH = 2048;
 

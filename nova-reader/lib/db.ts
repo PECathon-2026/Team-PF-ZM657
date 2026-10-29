@@ -10,8 +10,10 @@
 // To look at the data: open browser DevTools → Application → IndexedDB → nova-reader.
 
 import Dexie, { type EntityTable } from "dexie";
-import { z } from "zod";
+import "./zod-setup";
+import * as z from "zod";
 import type { CachedFeed, ExtractedArticle, FeedInfo, FeedItem, ReadableArticle, SavedArticle } from "./feed-types";
+import { logError } from "./log";
 import { feedInfoSchema, feedItemSchema } from "./validation";
 
 /** How many feeds keep an offline copy. Older copies are deleted first. */
@@ -85,7 +87,7 @@ async function safely<T>(action: () => Promise<T>, failMessage: string): Promise
   try {
     return await action();
   } catch (error) {
-    if (!(error instanceof LocalStorageError)) console.error("[db]", error);
+    if (!(error instanceof LocalStorageError)) logError("db", error);
     throw toLocalStorageError(error, failMessage);
   }
 }

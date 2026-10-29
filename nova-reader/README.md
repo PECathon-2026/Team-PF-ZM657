@@ -58,6 +58,8 @@ nova-reader/
 │   ├── layout.tsx            # SERVER: HTML shell, page title
 │   ├── page.tsx              # BROWSER: main page, connects everything
 │   ├── radar/page.tsx        # BROWSER: Personal Knowledge Radar (Stage 8)
+│   ├── error.tsx, global-error.tsx, not-found.tsx  # Stage 9 error pages
+│   ├── api/[...path]/route.ts # SERVER: JSON 404 for unknown API paths (Stage 9)
 │   └── globals.css           # colours, focus styles, Tailwind import
 ├── components/               # BROWSER: UI pieces
 │   ├── FeedForm.tsx          # URL input + example feeds
@@ -101,6 +103,9 @@ nova-reader/
 ├── workers/ai.worker.ts      # Stage 7: the AI Web Worker (Transformers.js)
 ├── scripts/copy-onnx-wasm.mjs # copies the ONNX Runtime engine into public/ort/ (dev + build)
 ├── tests/                    # Vitest tests
+├── e2e/                      # Playwright browser tests (Stage 9)
+├── public/sw.js              # service worker: app opens offline (Stage 9)
+├── .github/workflows/ci.yml  # CI: audit, check, e2e (Stage 9)
 ├── docs/                     # screenshot + file-by-file guide
 ├── .env.example              # no variables needed yet
 └── package.json
@@ -132,6 +137,8 @@ Notes: `.npmrc` sets `onnxruntime-node-install=skip` (a server-only optional dow
 | `npm start` | Run the production build (after `npm run build`) |
 | `npm run lint` | Check code style and common mistakes |
 | `npm run typecheck` | Check TypeScript types without building |
+| `npm run check` | Lint + typecheck + unit tests + build (what CI runs first) |
+| `npm run test:e2e` | Browser tests with Playwright (builds and starts the app). First time: `npx playwright install chromium` |
 
 ## Testing commands
 
@@ -139,6 +146,8 @@ Notes: `.npmrc` sets `onnxruntime-node-install=skip` (a server-only optional dow
 npm test             # run all tests once
 npm run test:run     # same, explicit name
 npm run test:watch   # re-run tests when files change
+npm run test:e2e     # real-browser tests: smoke, security headers + CSP, no third-party requests,
+                     # axe accessibility (light + dark), keyboard, offline via service worker
 ```
 
 Frontend tests (`tests/home-page.test.tsx`) render the real page in jsdom with React Testing Library and a fake `fetch`; `fake-indexeddb` stands in for the browser database.
@@ -235,8 +244,8 @@ Please read this before deploying publicly.
 - **Article pages are untrusted.** The server only downloads them (same SSRF protection as feeds) and returns them as JSON data with `Content-Security-Policy: default-src 'none'`, so they can never run as part of this site. Extraction runs on an inert, cloned document, and output is always sanitized. Readability can still mis-detect the main content (e.g. on pages that need JavaScript, paywalls, or home pages); then the feed text is shown with an explanation.
 - **Using the article route reveals reading to the server operator** (which article URL was requested). The server does not store or log URLs, and the blog sees the server, not the reader.
 - Feed text is decoded using the Content-Type charset, a byte-order mark or the XML declaration, falling back to UTF-8.
-- The API sends `Content-Security-Policy: default-src 'none'`, `nosniff` and `no-store` headers. The web pages themselves do not have a CSP yet.
-- **Not production-safe yet.** Before a public launch: network egress controls, a shared rate limiter, monitoring, and a security review.
+- **Security headers (Stage 9):** every page sends a strict Content-Security-Policy (`default-src 'self'`, no third-party scripts, connections only to this site and Hugging Face, `frame-ancestors 'none'`), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy`, HSTS and COOP; `X-Powered-By` is removed. API responses additionally use `default-src 'none'`. The CSP still allows `'unsafe-inline'` scripts (needed by Next.js static pages). Details and accepted risks: [docs/SECURITY.md](docs/SECURITY.md).
+- **Beta, not a hardened production service.** Before a public launch: network egress controls, a shared rate limiter, and the manual checks in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## Offline behavior
 
@@ -248,9 +257,11 @@ What works offline (once the page is open):
 - If the server cannot be reached or times out, the stored copy is shown with a **Try again** button.
 - The badge changes to "Offline: stored articles only". A feed with no stored copy shows a clear error.
 
-What does **not** work offline yet:
+- **Opening and refreshing the app offline (Stage 9):** a service worker (`public/sw.js`, production builds only) keeps the app's own pages and build files, so after one online visit `/` and `/radar` open with no connection. It never stores `/api/*` responses, the AI model or other websites. Your data stays in IndexedDB.
 
-- **Opening or refreshing the page while offline.** There is no service worker yet, so the browser cannot load the app itself without a connection. The data is still in IndexedDB and appears as soon as the page loads.
+What does **not** work offline:
+
+- Opening the app offline on a device that has never opened it online.
 - Loading feeds you have never loaded before.
 - Only the last 10 feeds are kept. The browser may also delete site data when the device is low on space (persistent storage is not requested yet).
 
@@ -303,6 +314,23 @@ Limitations: T5-small reads about 2,000 characters, so only the beginning of lon
 8. **Add encrypted local data export** — export saved articles (and later OPML) as an encrypted file.
 
 Also needed for the full PS-003 challenge: multiple subscriptions with one chronological timeline, read/unread state, per-feed filtering, a service worker so the app itself opens offline, and moving feed parsing to the browser.
+
+## Release readiness (Stage 9)
+
+- **Errors:** one set of stable codes (`lib/app-errors.ts`: `UNKNOWN`, `NETWORK`, `TIMEOUT`, `VALIDATION`, `NOT_FOUND`, `UNAUTHORIZED`, `RATE_LIMITED`, `STORAGE`, `EXTRACTION`, `LOCAL_AI`, `UNSUPPORTED`) that every earlier code maps onto.
+  - `app/error.tsx` (Try again + Back to the reader), `app/global-error.tsx` and `app/not-found.tsx`.
+  - Unknown `/api/*` paths return the same safe JSON error.
+  - Logs are one redacted line: no stack traces, query strings, `KEY=value` secrets, file paths or article text.
+- **Security and privacy:** page-wide CSP and security headers (above). An automated test checks for no CSP violations and no requests to other websites. See [docs/SECURITY.md](docs/SECURITY.md) and [docs/PRIVACY.md](docs/PRIVACY.md).
+- **Accessibility:** axe-core (WCAG 2.2 AA + best practices) reports 0 violations on home, reader, radar and 404 in light and dark mode. There are skip links on both pages, the reader dialog returns focus, and motion is reduced when the system asks.
+- **Performance:**
+  - Home-page JavaScript went from about 1.19 MB to 0.91 MB uncompressed (288 KB gzipped), because Zod is now tree-shaken and its translations aren't bundled.
+  - Readability loads only when a full article is opened.
+  - The AI engine loads only after the user enables it.
+- **Offline:** service worker (above).
+- **Browsers:** see [docs/BROWSER_SUPPORT.md](docs/BROWSER_SUPPORT.md); `<dialog>` has a fallback; `engines.node >= 20.9`.
+- **CI:** `.github/workflows/ci.yml` runs `npm audit`, `npm run check` and `npm run test:e2e`.
+- **Checklist:** [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## Contributing
 

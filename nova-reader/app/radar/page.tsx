@@ -43,6 +43,12 @@ export default function RadarPage() {
 
   return (
     <>
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-10 focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2"
+      >
+        Skip to content
+      </a>
       <header className="border-b border-line bg-surface">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
           <div>

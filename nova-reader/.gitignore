@@ -46,3 +46,9 @@ next-env.d.ts
 
 # Files moved aside for manual deletion
 /_to_delete/
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/

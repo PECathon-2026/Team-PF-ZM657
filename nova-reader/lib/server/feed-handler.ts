@@ -13,6 +13,7 @@ import { validateFeedUrl } from "@/lib/validation";
 import { FeedRouteError, isTimeoutError } from "./errors";
 import { fetchFeedXml, type FetchFeedOptions } from "./feed-fetcher";
 import { feedRateLimiter, getClientKey, type RateLimiter } from "./rate-limit";
+import { logError } from "@/lib/log";
 import { errorJson, SECURITY_HEADERS } from "./responses";
 
 export type FeedHandlerDeps = {
@@ -46,8 +47,8 @@ export async function handleFeedRequest(request: Request, deps: FeedHandlerDeps 
   } catch (error) {
     const { code, status, message } = describeError(error);
     if (code === "INTERNAL_ERROR") {
-      // Server log only. The browser gets a generic message, never this.
-      console.error("[api/feed] unexpected error:", error);
+      // Server log only, redacted (no stack, no query strings, no paths). The browser gets a generic message.
+      logError("api/feed", error);
     }
     return errorJson(code, status, message);
   }

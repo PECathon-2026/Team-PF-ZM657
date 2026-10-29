@@ -49,6 +49,7 @@ export const API_ERROR_CODES = [
   "INVALID_XML",
   "UNSUPPORTED_FORMAT",
   "INTERNAL_ERROR",
+  "NOT_FOUND", // Stage 9: unknown /api/... path
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];

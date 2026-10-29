@@ -16,6 +16,7 @@ import { validateFeedUrl } from "@/lib/validation";
 import { FeedRouteError, isTimeoutError } from "./errors";
 import { assertArticleContentType, fetchTextSafely, type FetchFeedOptions } from "./feed-fetcher";
 import { articleRateLimiter, getClientKey, type RateLimiter } from "./rate-limit";
+import { logError } from "@/lib/log";
 import { errorJson, SECURITY_HEADERS } from "./responses";
 
 /** Article pages are often bigger than feeds (inline CSS, scripts, markup). */
@@ -58,7 +59,7 @@ export async function handleArticleRequest(request: Request, deps: ArticleHandle
     return Response.json(body, { status: 200, headers: SECURITY_HEADERS });
   } catch (error) {
     const { code, status, message } = describeError(error);
-    if (code === "INTERNAL_ERROR") console.error("[api/article] unexpected error:", error);
+    if (code === "INTERNAL_ERROR") logError("api/article", error); // redacted, no stack
     return errorJson(code, status, message);
   }
 }

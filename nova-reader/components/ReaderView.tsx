@@ -33,8 +33,15 @@ export function ReaderView({ article, onClose }: ReaderViewProps) {
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
-    if (article && !dialog.open) dialog.showModal();
-    if (!article && dialog.open) dialog.close();
+    // Very old browsers (e.g. Safari < 15.4) lack showModal(): fall back to the open attribute.
+    if (article && !dialog.open) {
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+    }
+    if (!article && dialog.open) {
+      if (typeof dialog.close === "function") dialog.close();
+      else dialog.removeAttribute("open");
+    }
   }, [article]);
 
   return (

@@ -1,0 +1,42 @@
+# Continuous integration (Stage 9): every push and pull request must pass
+# lint, type checking, unit tests, the production build and the browser tests.
+# Assumes the nova-reader folder is the repository root. If your repository
+# root is the parent folder, move this file to <root>/.github/workflows/ and
+# uncomment `defaults.run.working-directory` below.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# defaults:
+#   run:
+#     working-directory: nova-reader
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run check # lint + typecheck + unit tests + build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: test-results/
+          retention-days: 7

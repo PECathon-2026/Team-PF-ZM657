@@ -18,6 +18,17 @@ The only API endpoint: `GET /api/feed?url=<encoded-feed-url>`. It is three lines
 
 `GET /api/article?url=<encoded-article-url>`. Three lines: calls `handleArticleRequest()` from `lib/server/article-handler.ts`.
 
+### Stage 9 error pages — Browser / Server
+
+| File | What it does |
+| --- | --- |
+| `app/error.tsx` (browser) | Catches unexpected errors on `/` and `/radar`. Shows a safe message from `toAppError()`, **Try again** (`retry()`, Next 16), **Back to the reader**, and the error digest as a reference. Logs one redacted line. |
+| `app/global-error.tsx` (browser) | Used only if the root layout fails; brings its own `<html>`/`<body>` and styles. |
+| `app/not-found.tsx` (server) | 404 page with a `<main>` landmark and links back. |
+| `app/api/[...path]/route.ts` (server) | Any unknown `/api/...` path, any method → `{ success: false, error: { code: "NOT_FOUND" } }` with status 404. |
+| `components/errors/ErrorScreen.tsx` | The shared error layout. |
+| `components/ServiceWorkerRegistration.tsx` | Registers `public/sw.js` in production builds on secure origins; renders nothing. |
+
 ### `app/layout.tsx` — Server
 
 The HTML shell (`<html>`, `<body>`) and page title. Uses system fonts, so no font is downloaded from Google (faster and more private).
@@ -81,6 +92,20 @@ Imports Tailwind and defines colour tokens (`--accent`, `--ink`, …) for light 
 | `countWords`, `languageName` | Word counting; `"en-US"` → “English”. |
 
 Topics: an article counts once per topic, whether the topic is a feed category or a word in its text. `notAvailable` lists what the app does not store.
+
+### `lib/app-errors.ts`, `lib/log.ts`, `lib/zod-setup.ts` — Both (Stage 9)
+
+| Function | What it does |
+| --- | --- |
+| `toAppErrorCode(code)` | Maps every earlier code (API, browser request, storage, extraction, AI) onto the 11 `AppErrorCode`s. |
+| `toAppError(error)` | Any thrown value → `{ code, message, retryable }` with a **fixed** friendly message (the raw message is never used). |
+| `redact(text)` / `describeForLog(error)` | Remove URL credentials and query strings, bearer tokens, `KEY=value` secrets and file paths; one line, max 200 characters; no stack. |
+| `logError(scope, error)` | The only logging helper: `[nova:scope] CODE redacted-description`. |
+| `lib/zod-setup.ts` | `config({ jitless: true })` so Zod never probes `eval`, which the CSP forbids. Imported by every module that defines schemas (also inside the AI worker). |
+
+### `public/sw.js` — Service worker (Stage 9)
+
+Network-first for pages (`/`, `/radar`, cached copy only when offline), cache-first for `/_next/static/*` (hashed, max 200 entries), and nothing else. It never caches `/api/*`, `/ort/`, the AI model or other origins. Old caches are deleted on activation; bump `VERSION` when rules change.
 
 ### `lib/feed-types.ts` — Both
 
@@ -242,6 +267,9 @@ Every file starts with `import "server-only"`, so Next.js fails the build if bro
 | `helpers/fake-ai-worker.ts` | A fake worker that runs the real worker logic with a fake model. |
 | `radar.test.ts` | Empty state, totals, inputs unchanged, categories (case-insensitive), category **or** keyword counted once per article, counting articles not repetitions, full text used, 2-article rule, topic limit, no invented topics, keywords/stop words/other alphabets, sources + “Other”, weeks (Monday start, old/invalid dates ignored), reading depth, languages, word counting, “cannot see” notes. |
 | `radar-page.test.tsx` | `/radar` with real IndexedDB behaviour: empty state, summary numbers, topics/sources/languages, chart present, honest notes, keyboard tooltip, table view, Refresh, no network use, storage unavailable. |
+| `app-errors.test.ts` | Every API and AI code maps to an app code; raw messages never used; storage, timeout and chunk-load errors; redaction of credentials, query strings, secrets, bearer tokens and paths; one-line logs; JSON 404 for unknown API paths. |
+| `error-pages.test.tsx` | Error page shows only a safe message, Try again calls `retry`, a link back, a reference; logs are redacted; 404 page has a main landmark. |
+| `e2e/*.spec.ts` (Playwright) | `smoke` (feed, save, read, radar, 404), `security` (headers, real API errors, no CSP violations, no third-party requests, CSP blocks others, local AI under CSP), `accessibility` (axe light + dark, keyboard), `offline` (opens and reloads offline; API never cached). |
 | `ssrf.test.ts` | IP policy (IPv4 + IPv6 special ranges), DNS validation, pinned lookup in both Node modes, DNS-rebinding simulation, port policy. |
 | `http-client.test.ts` | Real local HTTP server: body/headers, gzip, redirects not followed, Content-Length limit, streaming limit, gzip bomb, timeout, unknown encoding, refused connection, and proof that the real pinned lookup never lets a request reach 127.0.0.1. |
 
@@ -253,8 +281,10 @@ Every file starts with `import "server-only"`, so Next.js fails the build if bro
 | `vitest.config.mts` | Test settings; makes `@/` imports work in tests and maps `server-only` to its empty file (it would throw outside Next.js). |
 | `tsconfig.json` | TypeScript settings (`strict: true`). |
 | `eslint.config.mjs` | Lint rules from Next.js (includes accessibility rules). Ignores the generated `public/ort/` files. |
+| `playwright.config.ts` | e2e config: builds, starts on port 3900, runs `e2e/` in Chromium. |
+| `.github/workflows/ci.yml` | CI: `npm ci`, `npm audit`, `npm run check`, Playwright install, `npm run test:e2e`. |
 | `.npmrc` | `onnxruntime-node-install=skip`: skips an optional, server-only download (CUDA binaries) that the browser AI does not use. |
-| `next.config.ts` | Next.js settings generated by `create-next-app`. |
+| `next.config.ts` (Stage 9) | Security headers for every path (CSP without nonces, frame/referrer/permissions/HSTS/COOP), `poweredByHeader: false`, no-cache for `/sw.js`. |
 | `.env.example` | Documents that no environment variables are needed. |
 | `.gitignore` | Keeps `node_modules`, builds and `.env*` files out of git (except `.env.example`). |
 | `AGENTS.md` | Generated by Next.js for AI coding assistants. Safe to keep. |

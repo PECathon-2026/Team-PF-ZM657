@@ -9,7 +9,6 @@
 
 import { useEffect, useState } from "react";
 import { fetchArticlePage } from "./article-client";
-import { extractReadableArticle } from "./article-extractor";
 import { getExtractedArticle, storeExtractedArticle } from "./db";
 import type { ExtractedArticle } from "./feed-types";
 
@@ -34,6 +33,8 @@ export async function getReadableArticle(articleUrl: string, signal: AbortSignal
   const page = await fetchArticlePage(articleUrl, { signal });
   if (!page.ok) return { status: "failed", message: page.message, retryable: page.retryable };
 
+  // Loaded on demand (Stage 9): Readability is only downloaded when a full article is needed.
+  const { extractReadableArticle } = await import("./article-extractor");
   const extracted = extractReadableArticle(page.html, page.pageUrl, articleUrl);
   if (!extracted.ok) return { status: "failed", message: extracted.message, retryable: false };
 

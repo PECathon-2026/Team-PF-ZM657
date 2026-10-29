@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit",
     "test:run": "vitest run",
     "predev": "node scripts/copy-onnx-wasm.mjs",
-    "prebuild": "node scripts/copy-onnx-wasm.mjs"
+    "prebuild": "node scripts/copy-onnx-wasm.mjs",
+    "test:e2e": "playwright test",
+    "check": "npm run lint && npm run typecheck && npm run test:run && npm run build"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.1",
@@ -28,6 +30,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/turbopack": "^4",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
@@ -35,6 +38,7 @@
     "@types/node": "^22.20.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "axe-core": "^4.14.0",
     "eslint": "^9",
     "eslint-config-next": "16.4.3",
     "fake-indexeddb": "^6.2.6",
@@ -42,5 +46,8 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^5.0.5"
+  },
+  "engines": {
+    "node": ">=20.9.0"
   }
 }

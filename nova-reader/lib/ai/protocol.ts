@@ -2,7 +2,8 @@
 // Every message coming FROM the worker is checked with Zod before it is used,
 // so a buggy or unexpected worker can never inject unchecked data into the UI.
 
-import { z } from "zod";
+import "@/lib/zod-setup"; // CSP-safe Zod settings (no eval), also inside the worker
+import * as z from "zod";
 import type { AiDevice } from "./config";
 
 export const AI_ERROR_CODES = [

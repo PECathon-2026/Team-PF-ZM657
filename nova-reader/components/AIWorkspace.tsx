@@ -123,7 +123,7 @@ export function AIWorkspace() {
           Summarize locally <span className="text-xs text-ink-muted">(in the reading view)</span>
         </li>
         {PLANNED.map(({ title, icon: Icon }) => (
-          <li key={title} className="flex items-center gap-2 text-sm text-ink-muted opacity-70">
+          <li key={title} className="flex items-center gap-2 text-sm text-ink-muted">
             <Icon aria-hidden="true" className="size-4" />
             {title} <span className="text-xs">(planned)</span>
           </li>
