@@ -53,14 +53,15 @@ Imports Tailwind and defines colour tokens (`--accent`, `--ink`, …) for light 
 | `FeedForm.tsx` | The URL input. `submit()` validates with `validateFeedUrl()` and shows the error under the input (linked with `aria-describedby`). The button is disabled while loading. Has three example feeds. |
 | `FeedList.tsx` | Feed title, description, article count, website link, and the list of `ArticleCard`s. Shows an empty state if the feed has no articles. |
 | `ArticleCard.tsx` | One article: title, `<time>` date, author, 3-line summary, **Read**, **Save** (`aria-pressed` shows its state) and **Original** link (`rel="noopener noreferrer"`). The `compact` variant is used in the sidebar. |
-| `ReaderView.tsx` | The reading view, built on the native `<dialog>`: focus moves into it and **Escape** closes it. Shows the feed's text with paragraph breaks. |
+| `ReaderView.tsx` | The reading view, built on the native `<dialog>`: focus moves into it and **Escape** closes it. Shows `ArticleContent` when the feed sent HTML, otherwise the plain-text summary plus a note that links are not available. |
+| `ArticleContent.tsx` | Sanitizes `contentHtml` with `sanitizeArticleHtml()` and inserts the cleaned nodes into an empty `<div>` (`replaceChildren`). Link styles come from `.article-content` in `globals.css`. |
 | `SavedArticles.tsx` | The "Saved on this device" section: loading, error, empty and list states. |
 | `OfflineIndicator.tsx` | Badge showing "Online" or "Offline: saved articles only". `role="status"` makes screen readers announce changes. |
 | `AIWorkspacePlaceholder.tsx` | Three inactive cards for future local AI. Makes **no** network calls. |
 | `EmptyState.tsx` | A friendly "nothing here yet" box with an icon. |
 | `StatusMessage.tsx` | A coloured message. Errors use `role="alert"` (announced immediately); others use `role="status"`. |
 
-**Safety rule used everywhere:** feed content is rendered as text with `{value}` in JSX. React escapes it, so it can never run as code. We never use `dangerouslySetInnerHTML`.
+**Safety rule used everywhere:** feed content is rendered as text with `{value}` in JSX, so React escapes it. The one exception is article HTML in `ArticleContent`, which is always sanitized by DOMPurify first. We never use `dangerouslySetInnerHTML`.
 
 ---
 
@@ -83,6 +84,8 @@ Only types and constants: `FeedItem`, `Feed`, `FeedInfo`, `SavedArticle`, `Reada
 
 Items without a valid http(s) link are skipped, because there is nothing to open.
 
+`keepHtml(content)` keeps the raw content as `contentHtml` when it contains HTML tags (max 200,000 characters). It is **not** sanitized here; the browser does that right before display.
+
 ### `lib/validation.ts` — Both
 
 | Function / value | What it does |
@@ -102,6 +105,13 @@ Dexie database named `nova-reader` with one table, `savedArticles` (primary key 
 | `removeSavedArticle(id)` | Deletes one article. |
 | `safely(...)` | Wraps every call so failures (for example private browsing) become a friendly `LocalStorageError`. |
 
+### `lib/sanitize-html.ts` — Browser
+
+| Function | What it does |
+| --- | --- |
+| `sanitizeArticleHtml(html, baseUrl)` | Runs DOMPurify with a short allow-list of reading tags (`p`, `a`, `em`, lists, headings…) and only the `href`/`title` attributes. Returns a `DocumentFragment`. |
+| `secureLink(link, baseUrl)` | Resolves the link against the article URL. Keeps it only if it is http(s), otherwise removes `href` (the text stays). Adds `target="_blank"` and `rel="noopener noreferrer nofollow ugc"`. |
+
 ### `lib/use-online-status.ts` — Browser
 
 `useOnlineStatus()` is a React hook that returns `true`/`false` and re-renders when the browser fires `online`/`offline` events (`useSyncExternalStore`).
@@ -117,6 +127,7 @@ Dexie database named `nova-reader` with one table, `savedArticles` (primary key 
 | File | What it covers |
 | --- | --- |
 | `feed-parser.test.ts` | Valid RSS, valid Atom, empty feed, missing title, missing description, duplicate links, invalid XML, empty input, non-feed XML, invalid dates, relative URLs (two cases), `javascript:` links, more than 50 items, stable IDs, content preference. |
+| `sanitize-html.test.ts` | Runs in jsdom. Absolute link (NASA case), relative links, text without links, unsafe schemes (`javascript:`, `data:`, `vbscript:`…), dangerous markup (scripts, event handlers, iframes, forms, SVG, styles), no remote images. |
 | `validation.test.ts` | Good URLs, trimming, empty/non-string input, malformed URLs, long URLs, bad protocols, credentials, localhost and private IPs, response schema. |
 | `feed-route.test.ts` | The API route with a fake `fetch`: success, missing URL, localhost (no request made), redirect to a private IP, HTTP 404, invalid XML, >2 MB, timeout, network failure without leaking details. |
 

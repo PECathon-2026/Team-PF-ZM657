@@ -60,8 +60,10 @@ export function htmlToText(html: string): string {
     // Turn block-level endings into line breaks so paragraphs survive.
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|h[1-6]|li|blockquote|pre|tr|section|article)>/gi, "\n\n")
-    // Remove every remaining tag.
-    .replace(/<[^>]*>/g, " ");
+    .replace(/<\/(td|th)>/gi, " ") // keep table cells apart
+    // Remove every remaining (inline) tag. No space is added, because inline
+    // tags like <a> or <em> do not create space: "<a>here</a>." → "here."
+    .replace(/<[^>]*>/g, "");
 
   return decodeHtmlEntities(text)
     .replace(/[ \t\f\v ]+/g, " ") // collapse spaces

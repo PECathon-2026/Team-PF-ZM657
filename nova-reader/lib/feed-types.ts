@@ -8,6 +8,13 @@ export type FeedItem = {
   title: string;
   url: string;
   summary: string;
+  /**
+   * The article HTML exactly as the feed sent it (UNTRUSTED, not sanitized).
+   * Only present when the feed content contains HTML tags. It keeps links that
+   * `summary` (plain text) loses. Must go through lib/sanitize-html.ts before
+   * it is shown.
+   */
+  contentHtml?: string;
   author?: string;
   publishedAt?: string; // ISO 8601 date string, e.g. "2026-10-29T10:00:00.000Z"
   imageUrl?: string;
@@ -68,6 +75,7 @@ export type SavedArticle = {
   title: string;
   url: string;
   summary: string;
+  contentHtml?: string; // untrusted feed HTML, sanitized only when displayed
   author?: string;
   publishedAt?: string;
   savedAt: string; // ISO date of when the user pressed "Save"
@@ -75,7 +83,7 @@ export type SavedArticle = {
 };
 
 /** The fields the UI needs to show or read an article. Both FeedItem and SavedArticle fit. */
-export type ReadableArticle = Pick<FeedItem, "id" | "title" | "url" | "summary" | "author" | "publishedAt"> & {
+export type ReadableArticle = Pick<FeedItem, "id" | "title" | "url" | "summary" | "contentHtml" | "author" | "publishedAt"> & {
   feedTitle?: string;
 };
 

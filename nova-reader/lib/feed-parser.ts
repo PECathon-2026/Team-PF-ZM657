@@ -5,8 +5,9 @@
 // It is a pure function with no Node-only code, so it can later be moved to the
 // browser without changes (PECathon PS-003 asks for browser-side parsing).
 //
-// Safety: the parser only produces plain strings. Feed HTML is converted to
-// text and links are checked to be http(s), so nothing from a feed can run as code.
+// Safety: titles and summaries are converted to plain text, and article links
+// are checked to be http(s). `contentHtml` is kept as raw, untrusted HTML; it is
+// only ever displayed after DOMPurify sanitizes it in the browser.
 
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { MAX_FEED_ITEMS, type Feed, type FeedItem } from "./feed-types";
@@ -15,6 +16,7 @@ import { hashString, htmlToText, toIsoDate, toSafeHttpUrl, truncate } from "./ut
 const MAX_TITLE_LENGTH = 300;
 const MAX_DESCRIPTION_LENGTH = 1000;
 const MAX_SUMMARY_LENGTH = 10_000;
+const MAX_CONTENT_HTML_LENGTH = 200_000; // bigger content falls back to plain text
 
 /** Error thrown when the XML is broken or is not RSS/Atom. */
 export class FeedParseError extends Error {
@@ -121,6 +123,7 @@ function parseRssItem(item: XmlNode, baseUrl: string, feedUrl: string): FeedItem
     title,
     url,
     summary: truncate(htmlToText(content), MAX_SUMMARY_LENGTH),
+    contentHtml: keepHtml(content),
     author: cleanOptional(text(item["dc:creator"]) || text(firstOf(item["author"]))),
     publishedAt: toIsoDate(text(item["pubDate"]) || text(item["dc:date"])),
     imageUrl: findRssImage(item, baseUrl),
@@ -187,6 +190,7 @@ function parseAtomEntry(
     title: cleanTitle(text(entry["title"])) || "Untitled article",
     url,
     summary: truncate(htmlToText(content), MAX_SUMMARY_LENGTH),
+    contentHtml: keepHtml(content),
     author: atomAuthorName(entry["author"]) ?? feedAuthor,
     publishedAt: toIsoDate(text(entry["published"]) || text(entry["updated"])),
     imageUrl: findAtomImage(entry, baseUrl),
@@ -248,6 +252,17 @@ function finalizeItems(items: FeedItem[]): FeedItem[] {
 /** Same feed + same article always gives the same ID, so saved articles match. */
 function makeId(feedUrl: string, key: string): string {
   return `${hashString(feedUrl)}-${hashString(key)}`;
+}
+
+/**
+ * Keeps the raw feed HTML so the reader view can show links and formatting.
+ * Returned UNSANITIZED on purpose: the server never renders it. The browser
+ * sanitizes it with DOMPurify (lib/sanitize-html.ts) right before display.
+ * Returns undefined for plain text (no tags) or very large content.
+ */
+function keepHtml(content: string): string | undefined {
+  if (!content || content.length > MAX_CONTENT_HTML_LENGTH) return undefined;
+  return /<[a-z][^>]*>/i.test(content) ? content : undefined;
 }
 
 /** Gets the text inside a node, whether it is a plain string or { "#text": "..." }. */

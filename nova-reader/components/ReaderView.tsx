@@ -1,17 +1,20 @@
 "use client";
-// The readable view: a calm, full-height panel showing one article as text.
+// The readable view: a calm, full-height panel showing one article.
 // Runs in the BROWSER.
 //
 // It uses the browser's built-in <dialog> element, which gives us keyboard
 // support for free: focus moves into the dialog, and Escape closes it.
 //
-// MVP limitation: we show the text that the FEED provides. Some feeds include
-// the full article, others only a short summary. Fetching the full page
-// (Readability + sanitizing) is planned for a later version.
+// Content: if the feed sent HTML (contentHtml), we show it sanitized, with
+// working links. Otherwise we show the plain-text summary.
+// Limitation: we only show what the FEED provides. If a feed has just a short
+// plain summary, links that exist only on the original page are not available
+// here. Fetching the full page (Readability) is planned for a later version.
 
 import { useEffect, useRef } from "react";
 import { ExternalLink, X } from "lucide-react";
 import type { ReadableArticle } from "@/lib/feed-types";
+import { ArticleContent } from "./ArticleContent";
 import { formatDate } from "@/lib/utils";
 
 type ReaderViewProps = {
@@ -62,7 +65,9 @@ export function ReaderView({ article, onClose }: ReaderViewProps) {
               {article.author && <span>by {article.author}</span>}
             </p>
 
-            {article.summary ? (
+            {article.contentHtml ? (
+              <ArticleContent html={article.contentHtml} baseUrl={article.url} />
+            ) : article.summary ? (
               // whitespace-pre-line keeps the paragraph breaks from htmlToText().
               <div className="mt-6 font-serif text-lg leading-8 whitespace-pre-line">{article.summary}</div>
             ) : (
@@ -70,7 +75,8 @@ export function ReaderView({ article, onClose }: ReaderViewProps) {
             )}
 
             <p className="mt-8 border-t border-line pt-4 text-sm text-ink-muted">
-              This view shows the text included in the feed. It may be shorter than the original article.
+              This view shows the content included in the feed. It may be shorter than the original article.
+              {!article.contentHtml && " This feed provided plain text only, so links from the original page are not shown."}
             </p>
             <a
               href={article.url}

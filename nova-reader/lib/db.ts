@@ -65,6 +65,7 @@ export async function saveArticle(item: ReadableArticle, feedTitle: string): Pro
     title: item.title,
     url: item.url,
     summary: item.summary,
+    contentHtml: item.contentHtml, // kept so links still work offline
     author: item.author,
     publishedAt: item.publishedAt,
     savedAt: new Date().toISOString(),

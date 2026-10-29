@@ -124,6 +124,7 @@ const feedItemSchema = z.object({
   title: z.string(),
   url: z.string(),
   summary: z.string(),
+  contentHtml: z.string().optional(),
   author: z.string().optional(),
   publishedAt: z.string().optional(),
   imageUrl: z.string().optional(),

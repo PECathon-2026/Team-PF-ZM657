@@ -181,3 +181,40 @@ describe("parseFeed – edge cases", () => {
     expect([...times].sort((a, b) => b - a)).toEqual(times);
   });
 });
+
+describe("parseFeed – keeping HTML links (regression: NASA Spanish feed)", () => {
+  // Same structure as https://www.nasa.gov/es/feed/ : the link exists only in
+  // <content:encoded>; <description> has the same sentence as plain text.
+  const nasaLike = rss(
+    `<item>
+      <title>Envía tu nombre a Titán</title>
+      <link>https://www.nasa.gov/es/news-release/envia-tu-nombre/</link>
+      <description><![CDATA[Read this release in English here.]]></description>
+      <content:encoded><![CDATA[<p><em>Read this release in English <a href="https://www.nasa.gov/news-release/send-your-name-to-titan-aboard-nasas-dragonfly-mission/">here</a>. </em></p>]]></content:encoded>
+    </item>`,
+  );
+
+  it("keeps the hyperlink in contentHtml while summary stays plain text", () => {
+    const [item] = parseFeed(nasaLike, "https://www.nasa.gov/es/feed/").items;
+    expect(item.summary).toBe("Read this release in English here.");
+    expect(item.contentHtml).toContain(
+      '<a href="https://www.nasa.gov/news-release/send-your-name-to-titan-aboard-nasas-dragonfly-mission/">here</a>',
+    );
+  });
+
+  it("keeps HTML from entity-escaped descriptions and Atom content", () => {
+    const escaped = rss(rssItem(1, `<description>See &lt;a href="/about"&gt;about&lt;/a&gt;</description>`));
+    expect(parseFeed(escaped, FEED_URL).items[0].contentHtml).toBe('See <a href="/about">about</a>');
+
+    const atom = `<feed xmlns="http://www.w3.org/2005/Atom"><title>A</title><entry><title>E</title>
+      <link href="https://a.example/e"/><content type="html">&lt;p&gt;Go &lt;a href="https://b.example/"&gt;there&lt;/a&gt;&lt;/p&gt;</content></entry></feed>`;
+    expect(parseFeed(atom, "https://a.example/feed").items[0].contentHtml).toBe('<p>Go <a href="https://b.example/">there</a></p>');
+  });
+
+  it("sets no contentHtml when the feed only has plain text", () => {
+    const plain = rss(rssItem(1, "<description>Just words, no tags.</description>"));
+    const [item] = parseFeed(plain, FEED_URL).items;
+    expect(item.summary).toBe("Just words, no tags.");
+    expect(item.contentHtml).toBeUndefined();
+  });
+});

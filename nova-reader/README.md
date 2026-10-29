@@ -15,12 +15,12 @@ NOVA Reader is a small, privacy-first and offline-friendly reader for RSS and At
 - Server route `GET /api/feed` with a 10-second timeout, 2 MB size limit, safe redirect handling and clear error codes.
 - Parser that normalizes RSS and Atom into one simple format: dates as ISO strings, relative links resolved, duplicates removed, stable IDs, at most 50 articles.
 - Article list with title, date, author, summary and a link to the original.
-- Reading view (accessible dialog) showing the text the feed includes.
+- Reading view (accessible dialog) showing the feed's content with **working, clearly styled links**. Feed HTML is sanitized with DOMPurify in the browser, relative links are resolved against the article URL, and only http(s) links are kept.
 - Save and remove articles, stored locally with Dexie.js + IndexedDB, persisting across refreshes.
 - Online/offline indicator that updates automatically.
 - Placeholder panel for future **local** AI features (does nothing yet, sends nothing).
 - Responsive layout, light and dark mode, keyboard-accessible controls, visible focus styles.
-- 53 automated tests (parser, validation, API route).
+- 67 automated tests (parser, validation, API route, HTML sanitizer).
 
 ## Features planned for later
 
@@ -35,6 +35,7 @@ See [Future GitHub issues](#future-github-issues) below. In short: multiple subs
 | Styling | Tailwind CSS 4 |
 | Local database | Dexie.js 4 over IndexedDB |
 | Validation | Zod 4 |
+| HTML sanitizing | DOMPurify 3 (tests use jsdom) |
 | XML parsing | fast-xml-parser 5 |
 | Icons | Lucide React |
 | Linting | ESLint 9 (Next.js config) |
@@ -54,6 +55,7 @@ nova-reader/
 │   ├── FeedList.tsx          # feed header + list of articles
 │   ├── ArticleCard.tsx       # one article: title, date, actions
 │   ├── ReaderView.tsx        # reading dialog
+│   ├── ArticleContent.tsx    # sanitized article HTML with links
 │   ├── SavedArticles.tsx     # "Saved on this device" section
 │   ├── OfflineIndicator.tsx  # online/offline badge
 │   ├── AIWorkspacePlaceholder.tsx  # future local-AI panel (inactive)
@@ -64,6 +66,7 @@ nova-reader/
 │   ├── feed-parser.ts        # RSS/Atom → Feed (pure function)
 │   ├── validation.ts         # URL checks + API response schema (Zod)
 │   ├── db.ts                 # BROWSER: IndexedDB via Dexie
+│   ├── sanitize-html.ts      # BROWSER: DOMPurify + safe links
 │   ├── use-online-status.ts  # BROWSER: online/offline React hook
 │   └── utils.ts              # small helpers (hash, html→text, dates)
 ├── tests/                    # Vitest tests
@@ -130,9 +133,10 @@ flowchart LR
 
 1. The user types a URL. `FeedForm` validates it with `validateFeedUrl()`.
 2. The browser calls `/api/feed?url=...`. The server validates the URL again, then downloads it with a timeout and a size limit. Each redirect is validated too.
-3. `parseFeed()` turns RSS or Atom XML into one `Feed` object. All HTML becomes plain text.
+3. `parseFeed()` turns RSS or Atom XML into one `Feed` object. Titles and summaries become plain text. If the feed content contains HTML, it is also kept unchanged as `contentHtml` (untrusted; the server never renders it).
 4. The browser checks the JSON shape with Zod and shows the articles.
-5. "Save" writes the article to IndexedDB through `lib/db.ts`. Nothing about saved articles goes to the server.
+5. "Save" writes the article (including `contentHtml`) to IndexedDB through `lib/db.ts`. Nothing about saved articles goes to the server.
+6. The reading view passes `contentHtml` through `sanitizeArticleHtml()` (DOMPurify allow-list + link checks) **every time it is displayed**, then inserts the cleaned DOM nodes. `dangerouslySetInnerHTML` is not used.
 
 **Note for PS-003:** the official challenge asks for feed parsing to happen in the browser and for the server route to return the raw response only. In this MVP the server parses, which made the first version simpler to test. `lib/feed-parser.ts` is a pure function with no server-only code, so the next step is to make the route return raw XML and call `parseFeed()` in the browser.
 
@@ -151,7 +155,8 @@ Please read this before deploying publicly.
 
 - **SSRF protection is basic.** The app blocks `localhost`, `.local`/`.internal` names and private IP addresses *written in the URL*, and checks every redirect. It does **not** resolve DNS first, so a public domain that points at a private IP (or DNS rebinding) is not blocked. **Production SSRF hardening is still needed** (resolve DNS, check every resolved IP, pin the connection to it).
 - **No rate limiting yet.** Anyone could use the route to make many requests. **Rate limiting must be added** before a public launch.
-- **Feeds are untrusted.** The app turns feed HTML into plain text and only allows http(s) links, but it **does not guarantee that every feed is safe or valid**. Links still open the original website, which may be unsafe.
+- **Feeds are untrusted.** Feed HTML is sanitized with DOMPurify (short tag allow-list, no scripts, styles, event handlers, iframes, forms or images) and only http(s) links are kept, but the app **does not guarantee that every feed is safe or valid**. Links open other websites, which may be unsafe.
+- **Links only come from the feed.** If a feed provides only a plain-text summary, links that exist only on the original web page are not shown; the reader view says so. Full-page extraction (Readability) is a planned issue.
 - Responses are decoded as UTF-8 only; feeds in other encodings may show wrong characters.
 - No Content-Security-Policy header is configured yet.
 
