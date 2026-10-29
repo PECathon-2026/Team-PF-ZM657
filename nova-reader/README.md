@@ -1,6 +1,6 @@
 # NOVA Reader
 
-NOVA Reader is a small, privacy-first and offline-friendly reader for RSS and Atom feeds. You paste a feed URL, the app's own server downloads the feed (because browsers block most cross-site feed requests), and the browser shows the articles in a clean list and reading view. Articles you save are stored **only in your browser** (IndexedDB), so they stay available after a refresh and while you are offline. There are no accounts, no tracking and no cloud AI. This is the **first MVP**, built for PECathon 2026 (Problem PS-003, "Small Web Reader"). It is a learning-friendly foundation, **not a production-ready product**.
+NOVA Reader is a small, privacy-first and offline-friendly reader for RSS and Atom feeds. You paste a feed URL, the app's own server downloads the feed (because browsers block most cross-site feed requests), and the browser shows the articles in a clean list and reading view. Articles you save are stored **only in your browser** (IndexedDB), so they stay available after a refresh and while you are offline. There are no accounts, no tracking and no cloud AI. Built for PECathon 2026 (Problem PS-003, "Small Web Reader"). Current release: **1.0.0-beta.1** — ready for a public beta, but **not yet a hardened production service** (see [Security limitations](#security-limitations) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 
 ## Screenshot
 
@@ -25,11 +25,12 @@ NOVA Reader is a small, privacy-first and offline-friendly reader for RSS and At
 - Online/offline indicator that updates automatically.
 - **Optional local AI (Stage 7):** a *Local AI* panel checks whether the browser can run AI (Web Worker + WebAssembly; WebGPU when available), shows the model, size and source, and downloads the model **only after you click**. Then **Summarize locally** in the reading view summarizes the article **inside your browser** (Web Worker), with download and processing progress, **Stop**, clear errors (unsupported, download failed, out of memory, WebGPU failure → CPU mode), validated plain-text output, and *Turn off* / *Delete downloaded model*. Without AI support everything else works as before.
 - Responsive layout, light and dark mode, keyboard-accessible controls, visible focus styles.
-- 67 automated tests (parser, validation, API route, HTML sanitizer).
+- **App opens offline (Stage 9):** a service worker keeps the app pages and code, never your data or API responses.
+- Automated tests: 470 unit/component tests (Vitest) and 12 real-browser tests (Playwright: journey, security headers + CSP, accessibility, keyboard, offline).
 
 ## Features planned for later
 
-See [Future GitHub issues](#future-github-issues) below. In short: multiple subscriptions with a unified timeline, read/unread state, feed autodiscovery, full-article extraction with sanitizing, anonymous opt-in discovery, a service worker for full offline loading, and local AI.
+See [Future GitHub issues](#future-github-issues) below. In short: multiple subscriptions with a unified timeline, read/unread state, feed autodiscovery, anonymous opt-in discovery, private semantic search and encrypted export.
 
 ## Technology stack
 
@@ -106,8 +107,10 @@ nova-reader/
 ├── e2e/                      # Playwright browser tests (Stage 9)
 ├── public/sw.js              # service worker: app opens offline (Stage 9)
 ├── .github/workflows/ci.yml  # CI: audit, check, e2e (Stage 9)
-├── docs/                     # screenshot + file-by-file guide
-├── .env.example              # no variables needed yet
+├── docs/                     # FILE_GUIDE, SECURITY, PRIVACY, DEPLOYMENT, BROWSER_SUPPORT,
+│                             # RELEASE_CHECKLIST, HANDOFF (Stage 9–10), screenshot
+├── CHANGELOG.md              # release notes (Stage 10)
+├── .env.example              # no variables needed
 └── package.json
 ```
 
@@ -305,7 +308,7 @@ Limitations: T5-small reads about 2,000 characters, so only the beginning of lon
 ## Future GitHub issues
 
 1. **Add website-to-feed autodiscovery** — find the feed from a site URL via `<link rel="alternate">`, `/feed`, `/rss.xml`, `/atom.xml`.
-2. **Add secure production-grade SSRF protection** — resolve DNS, block private IPs after resolution, pin connections, add rate limiting.
+2. ~~Add secure production-grade SSRF protection~~ — code-level protection done in Stage 4/9; still needed: network egress firewall and a shared rate limiter (see docs/SECURITY.md).
 3. ~~Add article extraction with Readability and sanitization~~ — done in Stage 6.
 4. ~~Add local WebGPU inference through a Worker~~ — foundation done in Stage 7 (summaries).
 5. **Add private semantic search using local embeddings** — embeddings computed and stored in the browser.
@@ -313,7 +316,7 @@ Limitations: T5-small reads about 2,000 characters, so only the beginning of lon
 7. **Add feed health monitoring** — show dead, slow or broken feeds without breaking the timeline.
 8. **Add encrypted local data export** — export saved articles (and later OPML) as an encrypted file.
 
-Also needed for the full PS-003 challenge: multiple subscriptions with one chronological timeline, read/unread state, per-feed filtering, a service worker so the app itself opens offline, and moving feed parsing to the browser.
+Also needed for the full PS-003 challenge: multiple subscriptions with one chronological timeline, read/unread state, per-feed filtering, and moving feed parsing to the browser.
 
 ## Release readiness (Stage 9)
 
@@ -331,6 +334,15 @@ Also needed for the full PS-003 challenge: multiple subscriptions with one chron
 - **Browsers:** see [docs/BROWSER_SUPPORT.md](docs/BROWSER_SUPPORT.md); `<dialog>` has a fallback; `engines.node >= 20.9`.
 - **CI:** `.github/workflows/ci.yml` runs `npm audit`, `npm run check` and `npm run test:e2e`.
 - **Checklist:** [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+
+## Deployment (Stage 10)
+
+No database, environment variables or secrets are needed. Short version:
+
+- **Vercel:** import the repo (set *Root Directory* to `nova-reader` if it is a sub-folder) and deploy with the defaults.
+- **Own server:** `npm ci && npm run build && npm start` behind an HTTPS reverse proxy that sets `X-Forwarded-For`, plus an egress firewall.
+
+Full steps, post-deploy checks and rollback: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). Release notes: [CHANGELOG.md](CHANGELOG.md). Handoff and known gaps: [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Contributing
 

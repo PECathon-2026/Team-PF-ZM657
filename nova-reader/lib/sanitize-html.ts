@@ -34,6 +34,9 @@ export function sanitizeArticleHtml(html: string, baseUrl: string): DocumentFrag
   const fragment = DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
+    // Stage 10: DOMPurify keeps data-* attributes by default. Feeds have no use
+    // for them, so drop them too (smaller attack surface, nothing for scripts to read).
+    ALLOW_DATA_ATTR: false,
     RETURN_DOM_FRAGMENT: true,
   });
 
