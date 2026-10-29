@@ -75,12 +75,14 @@ Only types and constants: `FeedItem`, `Feed`, `FeedInfo`, `SavedArticle`, `Reada
 
 | Function | What it does |
 | --- | --- |
-| `parseFeed(xml, feedUrl)` | Main function. Validates the XML, detects RSS 2.0, RSS 1.0 or Atom, and returns a `Feed`. Throws `FeedParseError` (`INVALID_XML` or `UNSUPPORTED_FORMAT`) for bad input. |
+| `parseFeedXml(xml, feedUrl, options?)` | Main function. Rejects XML over 2 MB, empty or malformed XML, detects RSS 2.0, RSS 1.0 or Atom (also `<atom:feed>` with a prefix), and returns a `Feed`. Throws `FeedParseError` (`INVALID_XML`, `UNSUPPORTED_FORMAT` or `RESPONSE_TOO_LARGE`). `options.maxItems` can lower the 50-article limit. `parseFeed` is the older name for the same function. |
+| `safeParseFeedXml(...)` | Same, but returns `{ ok: true, feed }` or `{ ok: false, code, message }` instead of throwing. |
+| `findImage(item, baseUrl)` | Looks for an image in enclosures, `media:thumbnail`, `media:content`, `media:group` and `itunes:image`. Unsafe URLs are skipped. |
+| `cleanText` / `cleanCategories` | Plain text, normalized whitespace, length limits (title 500, author 300, category 100, max 20 categories). |
 | `parseRss` / `parseRssItem` | Reads `<channel>` and `<item>`: title, link (or guid), `content:encoded` or description, `dc:creator`, `pubDate`, and an image from `enclosure` / `media:*`. |
 | `parseAtom` / `parseAtomEntry` | Reads `<feed>` and `<entry>`: `link rel="alternate"`, content or summary, `author/name` (falls back to the feed author), `published` or `updated`. |
-| `finalizeItems(items)` | Removes duplicate URLs and IDs, sorts newest first, and keeps 50. |
-| `makeId(feedUrl, key)` | Stable ID = hash(feed URL) + hash(guid or link). The same article always gets the same ID, which is how "Saved" buttons stay correct. |
-| `text`, `attr`, `asArray`, `asNode` | Small, safe helpers for reading the unknown-shaped XML tree without using `any`. |
+| `finalizeItems(items, maxItems)` | Removes duplicate URLs and IDs, sorts newest first, and keeps at most 50. |
+| `text`, `attr`, `asArray`, `asNode`, `nodes`, `stripPrefix` | Small, safe helpers for reading the unknown-shaped XML tree without using `any`. |
 
 Items without a valid http(s) link are skipped, because there is nothing to open.
 
@@ -118,7 +120,17 @@ Dexie database named `nova-reader` with one table, `savedArticles` (primary key 
 
 ### `lib/utils.ts` — Both
 
-`hashString`, `decodeHtmlEntities`, `htmlToText` (removes scripts, styles and tags, keeps paragraphs), `truncate`, `toIsoDate` (invalid dates → `undefined`), `toSafeHttpUrl` (resolves relative links and rejects `javascript:` etc.), `formatDate`.
+| Function | What it does |
+| --- | --- |
+| `toSafeString(value)` | Strings stay strings, numbers/booleans become text, anything else becomes `""`. |
+| `normalizeWhitespace(text)` | Tabs, new lines, non-breaking and other Unicode spaces → one space; removes zero-width characters. |
+| `htmlToText(html)` | Removes scripts, styles and tags; keeps paragraph breaks. |
+| `truncate(text, max)` | Cuts long text and adds "…". |
+| `toSafeHttpUrl(value, base?)` | Resolves relative links; returns `undefined` for anything that is not http(s). |
+| `removeDuplicateUrls(items)` | Keeps the first item per URL (ignoring `#fragment`). |
+| `toIsoDate(value)` | ISO date string, or `undefined` for invalid dates or years outside 1900–2200. |
+| `createArticleId(feedUrl, source)` | Deterministic ID. Priority: GUID/Atom ID → URL → title + date → fallback text. |
+| `hashString`, `decodeHtmlEntities`, `formatDate` | Small helpers (stable hash, `&amp;` → `&`, human-readable dates). |
 
 ---
 

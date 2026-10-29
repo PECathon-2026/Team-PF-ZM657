@@ -74,7 +74,15 @@ const feedUrlInputSchema = z
 /**
  * Checks a feed URL typed by the user.
  * Returns { ok: true, url } with a cleaned-up URL, or { ok: false, code, message }.
- * Never throws.
+ * Never throws, whatever the input (including non-strings).
+ *
+ * Rules: trimmed, not empty, at most 2048 characters, a real URL, http: or https:
+ * only (so file:, ftp:, javascript:, data:, blob: … are rejected), no
+ * "user:password@", and not localhost / loopback / private-network hostnames.
+ *
+ * IMPORTANT: this is BASIC MVP validation, NOT complete production SSRF
+ * protection. It checks the URL text only; it does not resolve DNS, so a public
+ * domain pointing at a private IP is not detected.
  */
 export function validateFeedUrl(input: unknown): UrlValidationResult {
   const parsed = feedUrlInputSchema.safeParse(input);
@@ -127,7 +135,9 @@ const feedItemSchema = z.object({
   contentHtml: z.string().optional(),
   author: z.string().optional(),
   publishedAt: z.string().optional(),
+  updatedAt: z.string().optional(),
   imageUrl: z.string().optional(),
+  categories: z.array(z.string()).optional(),
 });
 
 export const feedApiResponseSchema = z.discriminatedUnion("success", [

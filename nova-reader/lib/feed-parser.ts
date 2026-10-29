@@ -1,27 +1,35 @@
 // RSS + Atom parser.
 // Turns raw feed XML text into our simple `Feed` type.
 //
-// Where it runs: currently on the SERVER (called by app/api/feed/route.ts).
-// It is a pure function with no Node-only code, so it can later be moved to the
-// browser without changes (PECathon PS-003 asks for browser-side parsing).
+// Where it runs: BOTH. It is a pure function (no network, no storage, no
+// Node-only or browser-only code). Today the API route calls it on the server;
+// later it can run in the browser unchanged (PECathon PS-003 asks for that).
 //
-// Safety: titles and summaries are converted to plain text, and article links
-// are checked to be http(s). `contentHtml` is kept as raw, untrusted HTML; it is
-// only ever displayed after DOMPurify sanitizes it in the browser.
+// Safety: feed content is UNTRUSTED. Titles, summaries, authors and categories
+// become plain text. Every URL is resolved and must be http(s), so values like
+// "javascript:..." never come out. `contentHtml` is kept as raw, untrusted HTML
+// and is only ever displayed after DOMPurify sanitizes it in the browser.
+// Nothing in this file executes or renders feed content.
 
 import { XMLParser, XMLValidator } from "fast-xml-parser";
-import { MAX_FEED_ITEMS, type Feed, type FeedItem } from "./feed-types";
-import { hashString, htmlToText, toIsoDate, toSafeHttpUrl, truncate } from "./utils";
+import { FEED_LIMITS, type Feed, type FeedItem, type ParserOptions } from "./feed-types";
+import {
+  createArticleId,
+  htmlToText,
+  normalizeWhitespace,
+  removeDuplicateUrls,
+  toIsoDate,
+  toSafeHttpUrl,
+  toSafeString,
+  truncate,
+} from "./utils";
 
-const MAX_TITLE_LENGTH = 300;
-const MAX_DESCRIPTION_LENGTH = 1000;
-const MAX_SUMMARY_LENGTH = 10_000;
-const MAX_CONTENT_HTML_LENGTH = 200_000; // bigger content falls back to plain text
+export type FeedParseErrorCode = "INVALID_XML" | "UNSUPPORTED_FORMAT" | "RESPONSE_TOO_LARGE";
 
-/** Error thrown when the XML is broken or is not RSS/Atom. */
+/** Error thrown when the XML is empty, too big, broken, or not RSS/Atom. */
 export class FeedParseError extends Error {
   constructor(
-    public readonly code: "INVALID_XML" | "UNSUPPORTED_FORMAT",
+    public readonly code: FeedParseErrorCode,
     message: string,
   ) {
     super(message);
@@ -29,58 +37,118 @@ export class FeedParseError extends Error {
   }
 }
 
+/** Result type for callers who prefer no exceptions. */
+export type ParseFeedResult =
+  | { ok: true; feed: Feed }
+  | { ok: false; code: FeedParseErrorCode; message: string };
+
 // Parsed XML is a tree of unknown shape, so we treat every node as `unknown`
-// and check it before use. (This is why we do not need `any`.)
+// and check it before use. (This is why we never need `any`.)
 type XmlNode = Record<string, unknown>;
 
-// Tags that can appear more than once. Forcing them to be arrays means
-// "one item" and "many items" look the same to our code.
-const ARRAY_TAGS = new Set(["item", "entry", "link", "author", "category", "media:content", "media:thumbnail"]);
+// Tags that can repeat. Forcing them to be arrays means "one" and "many" look
+// the same. (Our helpers also accept single objects, for prefixed tags.)
+const ARRAY_TAGS = new Set([
+  "item",
+  "entry",
+  "link",
+  "author",
+  "category",
+  "dc:subject",
+  "media:content",
+  "media:thumbnail",
+  "media:group",
+]);
 
 const xmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
   textNodeName: "#text",
-  parseTagValue: false, // keep everything as strings
+  parseTagValue: false, // keep every value as a string
   parseAttributeValue: false,
   trimValues: true,
-  // Entity expansion is limited by fast-xml-parser's defaults, which protects
+  // Namespace prefixes are KEPT (e.g. "content:encoded", "dc:creator"), because
+  // removing them would mix up Atom <content> and <media:content>.
+  removeNSPrefix: false,
+  // Entity expansion uses fast-xml-parser's built-in limits, which protect
   // against "billion laughs" style XML bombs.
   processEntities: true,
   isArray: (tagName) => ARRAY_TAGS.has(tagName),
 });
 
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 /**
- * Main entry point.
- * @param xml     The raw feed text downloaded from the internet.
- * @param feedUrl The URL the feed came from. Used to resolve relative links.
- * @throws FeedParseError when the XML is invalid or not a feed.
+ * Parses RSS 2.0, RSS 1.0 (RDF) or Atom XML into a normalized `Feed`.
+ *
+ * @param xml     Raw feed text from the internet (untrusted, max 2 MB).
+ * @param feedUrl The URL the feed came from. Used for relative links and IDs.
+ * @param options Optional settings, e.g. { maxItems: 20 }.
+ * @throws FeedParseError for empty, oversized, malformed or unsupported XML.
  */
-export function parseFeed(xml: string, feedUrl: string): Feed {
+export function parseFeedXml(xml: string, feedUrl: string, options: ParserOptions = {}): Feed {
+  const maxItems = clampMaxItems(options.maxItems);
   const tree = parseXml(xml);
+  const rootName = Object.keys(tree).find((key) => !key.startsWith("?") && !key.startsWith("#"));
+  const root = rootName ? asNode(tree[rootName]) : undefined;
 
-  const rss = asNode(tree["rss"]);
-  if (rss) return parseRss(asNode(rss["channel"]) ?? {}, feedUrl);
-
-  const rdf = asNode(tree["rdf:RDF"]); // RSS 1.0, still used by some blogs
-  if (rdf) return parseRss({ ...(asNode(rdf["channel"]) ?? {}), item: rdf["item"] }, feedUrl);
-
-  const atom = asNode(tree["feed"]);
-  if (atom) return parseAtom(atom, feedUrl);
+  if (rootName === "rss" && root) {
+    return parseRss(asNode(root["channel"]) ?? {}, feedUrl, maxItems);
+  }
+  if (rootName === "rdf:RDF" && root) {
+    // RSS 1.0: <item> elements are siblings of <channel>, not children.
+    return parseRss({ ...(asNode(root["channel"]) ?? {}), item: root["item"] }, feedUrl, maxItems);
+  }
+  if (rootName && root && (rootName === "feed" || rootName.endsWith(":feed"))) {
+    // Atom. If the document uses a prefix (<atom:feed>), remove it so the rest
+    // of the code can look for plain names like "entry" and "title".
+    const prefix = rootName === "feed" ? undefined : rootName.slice(0, -":feed".length);
+    const atom = prefix ? asNode(stripPrefix(root, prefix)) ?? {} : root;
+    return parseAtom(atom, feedUrl, maxItems);
+  }
 
   throw new FeedParseError("UNSUPPORTED_FORMAT", "This URL did not return an RSS or Atom feed.");
 }
 
+/** Same as parseFeedXml, but returns { ok, ... } instead of throwing. */
+export function safeParseFeedXml(xml: string, feedUrl: string, options?: ParserOptions): ParseFeedResult {
+  try {
+    return { ok: true, feed: parseFeedXml(xml, feedUrl, options) };
+  } catch (error) {
+    if (error instanceof FeedParseError) return { ok: false, code: error.code, message: error.message };
+    return { ok: false, code: "INVALID_XML", message: "The feed could not be read." };
+  }
+}
+
+/** Older name, kept so existing code (app/api/feed/route.ts) keeps working. */
+export const parseFeed = parseFeedXml;
+
+// ---------------------------------------------------------------------------
+// XML reading
+// ---------------------------------------------------------------------------
+
 function parseXml(xml: string): XmlNode {
-  const trimmed = xml.trim().replace(/^﻿/, ""); // remove byte-order mark
+  if (typeof xml !== "string") throw new FeedParseError("INVALID_XML", "The feed is empty.");
+
+  // Check size BEFORE parsing. Characters ≤ bytes, so the cheap length check
+  // catches most oversized input without encoding it.
+  if (xml.length > FEED_LIMITS.maxXmlBytes || new TextEncoder().encode(xml).byteLength > FEED_LIMITS.maxXmlBytes) {
+    throw new FeedParseError("RESPONSE_TOO_LARGE", "The feed is too large (limit is 2 MB).");
+  }
+
+  const trimmed = xml.replace(/^\uFEFF/, "").trim(); // remove byte-order mark
   if (!trimmed) throw new FeedParseError("INVALID_XML", "The feed is empty.");
 
-  const validation = XMLValidator.validate(trimmed);
-  if (validation !== true) {
+  if (XMLValidator.validate(trimmed) !== true) {
     throw new FeedParseError("INVALID_XML", "The feed is not valid XML.");
   }
   try {
-    return xmlParser.parse(trimmed) as XmlNode;
+    const tree = xmlParser.parse(trimmed);
+    const node = asNode(tree);
+    if (!node) throw new Error("not an object");
+    return node;
   } catch {
     throw new FeedParseError("INVALID_XML", "The feed could not be read.");
   }
@@ -90,86 +158,76 @@ function parseXml(xml: string): XmlNode {
 // RSS 2.0 (and RSS 1.0)
 // ---------------------------------------------------------------------------
 
-function parseRss(channel: XmlNode, feedUrl: string): Feed {
-  const siteUrl = toSafeHttpUrl(firstText(channel["link"]), feedUrl);
+function parseRss(channel: XmlNode, feedUrl: string, maxItems: number): Feed {
+  const siteUrl =
+    toSafeHttpUrl(firstText(channel["link"]), feedUrl) ??
+    toSafeHttpUrl(findAtomLink(channel["atom:link"], "alternate"), feedUrl);
   const baseUrl = siteUrl ?? feedUrl;
 
-  const items = asArray(channel["item"])
-    .map(asNode)
-    .filter((node): node is XmlNode => node !== undefined)
+  const items = nodes(channel["item"])
     .map((item) => parseRssItem(item, baseUrl, feedUrl))
     .filter((item): item is FeedItem => item !== undefined);
 
   return {
-    title: cleanTitle(text(channel["title"])) || "Untitled feed",
-    description: cleanDescription(text(channel["description"])),
+    title: cleanText(channel["title"], FEED_LIMITS.maxTitleLength) || "Untitled feed",
+    description: cleanText(channel["description"], FEED_LIMITS.maxDescriptionLength) || undefined,
     siteUrl,
     feedUrl,
-    items: finalizeItems(items),
+    items: finalizeItems(items, maxItems),
   };
 }
 
 function parseRssItem(item: XmlNode, baseUrl: string, feedUrl: string): FeedItem | undefined {
-  const guid = text(item["guid"]);
-  // Some feeds only put the link in <guid>, so try it as a fallback.
-  const url = toSafeHttpUrl(firstText(item["link"]), baseUrl) ?? toSafeHttpUrl(guid, baseUrl);
-  if (!url) return undefined; // without a link, there is nothing to open
+  const guidNode = item["guid"];
+  const guid = text(guidNode);
+  const url = toSafeHttpUrl(firstText(item["link"]), baseUrl) ?? guidAsUrl(guidNode);
+  if (!url) return undefined; // no safe link → nothing to open, so the item is skipped
 
-  const title = cleanTitle(text(item["title"])) || "Untitled article";
+  const title = cleanText(item["title"], FEED_LIMITS.maxTitleLength) || "Untitled article";
   const content = text(item["content:encoded"]) || text(item["description"]);
+  const summary = truncate(htmlToText(content), FEED_LIMITS.maxSummaryLength);
+  const publishedAt = toIsoDate(text(item["pubDate"]) || text(item["dc:date"]));
 
   return {
-    id: makeId(feedUrl, guid || url),
+    id: createArticleId(feedUrl, { guid, url, title, publishedAt, fallback: summary }),
     title,
     url,
-    summary: truncate(htmlToText(content), MAX_SUMMARY_LENGTH),
+    summary,
     contentHtml: keepHtml(content),
-    author: cleanOptional(text(item["dc:creator"]) || text(firstOf(item["author"]))),
-    publishedAt: toIsoDate(text(item["pubDate"]) || text(item["dc:date"])),
-    imageUrl: findRssImage(item, baseUrl),
+    author: cleanText(text(item["dc:creator"]) || firstText(item["author"]), FEED_LIMITS.maxAuthorLength) || undefined,
+    publishedAt,
+    updatedAt: toIsoDate(text(item["atom:updated"]) || text(item["dc:modified"])),
+    imageUrl: findImage(item, baseUrl),
+    categories: cleanCategories([...nodesOrText(item["category"]), ...nodesOrText(item["dc:subject"])].map(text)),
   };
 }
 
-function findRssImage(item: XmlNode, baseUrl: string): string | undefined {
-  const enclosure = asNode(item["enclosure"]);
-  if (enclosure && String(enclosure["@_type"] ?? "").startsWith("image/")) {
-    const url = toSafeHttpUrl(attr(enclosure, "url"), baseUrl);
-    if (url) return url;
-  }
-  for (const tag of ["media:thumbnail", "media:content"]) {
-    for (const node of asArray(item[tag]).map(asNode)) {
-      if (!node) continue;
-      const medium = attr(node, "medium");
-      const type = attr(node, "type") ?? "";
-      if (tag === "media:content" && medium !== "image" && !type.startsWith("image/")) continue;
-      const url = toSafeHttpUrl(attr(node, "url"), baseUrl);
-      if (url) return url;
-    }
-  }
-  return undefined;
+/** RSS <guid> is a permalink unless isPermaLink="false". Only absolute http(s) URLs count. */
+function guidAsUrl(guidNode: unknown): string | undefined {
+  const node = asNode(guidNode);
+  if (node && attr(node, "isPermaLink") === "false") return undefined;
+  return toSafeHttpUrl(text(guidNode)); // no base URL: "abc-123" is NOT a link
 }
 
 // ---------------------------------------------------------------------------
 // Atom
 // ---------------------------------------------------------------------------
 
-function parseAtom(feed: XmlNode, feedUrl: string): Feed {
+function parseAtom(feed: XmlNode, feedUrl: string, maxItems: number): Feed {
   const siteUrl = toSafeHttpUrl(findAtomLink(feed["link"], "alternate"), feedUrl);
   const baseUrl = siteUrl ?? feedUrl;
   const feedAuthor = atomAuthorName(feed["author"]);
 
-  const items = asArray(feed["entry"])
-    .map(asNode)
-    .filter((node): node is XmlNode => node !== undefined)
+  const items = nodes(feed["entry"])
     .map((entry) => parseAtomEntry(entry, baseUrl, feedUrl, feedAuthor))
     .filter((item): item is FeedItem => item !== undefined);
 
   return {
-    title: cleanTitle(text(feed["title"])) || "Untitled feed",
-    description: cleanDescription(text(feed["subtitle"])),
+    title: cleanText(feed["title"], FEED_LIMITS.maxTitleLength) || "Untitled feed",
+    description: cleanText(feed["subtitle"], FEED_LIMITS.maxDescriptionLength) || undefined,
     siteUrl,
     feedUrl,
-    items: finalizeItems(items),
+    items: finalizeItems(items, maxItems),
   };
 }
 
@@ -182,60 +240,102 @@ function parseAtomEntry(
   const url = toSafeHttpUrl(findAtomLink(entry["link"], "alternate"), baseUrl);
   if (!url) return undefined;
 
-  const atomId = text(entry["id"]);
+  const title = cleanText(entry["title"], FEED_LIMITS.maxTitleLength) || "Untitled article";
   const content = text(entry["content"]) || text(entry["summary"]);
+  const summary = truncate(htmlToText(content), FEED_LIMITS.maxSummaryLength);
+  const updatedAt = toIsoDate(text(entry["updated"]));
+  const publishedAt = toIsoDate(text(entry["published"])) ?? updatedAt;
 
   return {
-    id: makeId(feedUrl, atomId || url),
-    title: cleanTitle(text(entry["title"])) || "Untitled article",
+    id: createArticleId(feedUrl, { guid: text(entry["id"]), url, title, publishedAt, fallback: summary }),
+    title,
     url,
-    summary: truncate(htmlToText(content), MAX_SUMMARY_LENGTH),
+    summary,
     contentHtml: keepHtml(content),
     author: atomAuthorName(entry["author"]) ?? feedAuthor,
-    publishedAt: toIsoDate(text(entry["published"]) || text(entry["updated"])),
-    imageUrl: findAtomImage(entry, baseUrl),
+    publishedAt,
+    updatedAt,
+    imageUrl: findImage(entry, baseUrl),
+    // Atom: <category term="web" label="The Web"/> — the label is nicer to show.
+    categories: cleanCategories(nodes(entry["category"]).map((c) => attr(c, "label") ?? attr(c, "term") ?? "")),
   };
 }
 
-/** Atom links look like <link rel="alternate" href="..."/>. A missing rel means "alternate". */
+/**
+ * Picks an Atom link: rel="alternate" (a missing rel means alternate),
+ * preferring an HTML type when there are several alternates.
+ */
 function findAtomLink(links: unknown, rel: string): string | undefined {
-  const nodes = asArray(links).map(asNode).filter((n): n is XmlNode => n !== undefined);
-  const match = nodes.find((n) => (attr(n, "rel") ?? "alternate") === rel) ?? nodes.find((n) => !attr(n, "rel"));
-  return match ? attr(match, "href") : undefined;
-}
-
-function findAtomImage(entry: XmlNode, baseUrl: string): string | undefined {
-  const links = asArray(entry["link"]).map(asNode);
-  for (const link of links) {
-    if (link && attr(link, "rel") === "enclosure" && (attr(link, "type") ?? "").startsWith("image/")) {
-      return toSafeHttpUrl(attr(link, "href"), baseUrl);
-    }
-  }
-  const thumb = asNode(firstOf(entry["media:thumbnail"]));
-  return thumb ? toSafeHttpUrl(attr(thumb, "url"), baseUrl) : undefined;
+  const matching = nodes(links).filter((n) => (attr(n, "rel") ?? "alternate") === rel);
+  const html = matching.find((n) => {
+    const type = attr(n, "type");
+    return !type || type === "text/html" || type === "application/xhtml+xml";
+  });
+  const chosen = html ?? matching[0];
+  return chosen ? attr(chosen, "href") : undefined;
 }
 
 function atomAuthorName(authors: unknown): string | undefined {
-  const author = asNode(firstOf(authors));
-  return author ? cleanOptional(text(author["name"])) : cleanOptional(text(firstOf(authors)));
+  const first = asArray(authors)[0];
+  const node = asNode(first);
+  const name = node ? text(node["name"]) : text(first);
+  return cleanText(name, FEED_LIMITS.maxAuthorLength) || undefined;
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers
+// Images (RSS and Atom share these)
 // ---------------------------------------------------------------------------
 
-/** Removes duplicate URLs, sorts newest first, and keeps at most 50 items. */
-function finalizeItems(items: FeedItem[]): FeedItem[] {
-  const seenUrls = new Set<string>();
+/**
+ * Finds an image URL, checking in order: enclosures, media:thumbnail,
+ * media:content (images only), the same inside media:group, then itunes:image.
+ * Unsafe or broken URLs are skipped and the search continues.
+ */
+function findImage(item: XmlNode, baseUrl: string): string | undefined {
+  const candidates: (string | undefined)[] = [];
+
+  // RSS <enclosure url type="image/..."> and Atom <link rel="enclosure" href type>
+  for (const enclosure of nodes(item["enclosure"])) {
+    if ((attr(enclosure, "type") ?? "").startsWith("image/")) candidates.push(attr(enclosure, "url"));
+  }
+  for (const link of nodes(item["link"])) {
+    if (attr(link, "rel") === "enclosure" && (attr(link, "type") ?? "").startsWith("image/")) {
+      candidates.push(attr(link, "href"));
+    }
+  }
+
+  for (const container of [item, ...nodes(item["media:group"])]) {
+    for (const thumb of nodes(container["media:thumbnail"])) candidates.push(attr(thumb, "url"));
+    for (const media of nodes(container["media:content"])) {
+      const isImage = attr(media, "medium") === "image" || (attr(media, "type") ?? "").startsWith("image/");
+      if (isImage) candidates.push(attr(media, "url"));
+    }
+  }
+
+  const itunes = asNode(item["itunes:image"]);
+  if (itunes) candidates.push(attr(itunes, "href"));
+
+  for (const candidate of candidates) {
+    const safe = toSafeHttpUrl(candidate, baseUrl);
+    if (safe) return safe;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Cleaning and limits
+// ---------------------------------------------------------------------------
+
+/** Removes duplicate URLs and IDs, sorts newest first, keeps at most `maxItems`. */
+function finalizeItems(items: FeedItem[], maxItems: number): FeedItem[] {
   const seenIds = new Set<string>();
-  const unique = items.filter((item) => {
-    if (seenUrls.has(item.url) || seenIds.has(item.id)) return false;
-    seenUrls.add(item.url);
+  const unique = removeDuplicateUrls(items).filter((item) => {
+    if (seenIds.has(item.id)) return false;
     seenIds.add(item.id);
     return true;
   });
 
-  // Newest first. Items without a date keep their original order at the end.
+  // Newest first. Items without a date keep their original order, at the end.
   const sorted = unique
     .map((item, index) => ({ item, index }))
     .sort((a, b) => {
@@ -246,35 +346,58 @@ function finalizeItems(items: FeedItem[]): FeedItem[] {
     })
     .map(({ item }) => item);
 
-  return sorted.slice(0, MAX_FEED_ITEMS);
+  return sorted.slice(0, maxItems);
 }
 
-/** Same feed + same article always gives the same ID, so saved articles match. */
-function makeId(feedUrl: string, key: string): string {
-  return `${hashString(feedUrl)}-${hashString(key)}`;
+/** Plain, single-line text with a length limit (for titles, authors, etc.). */
+function cleanText(value: unknown, maxLength: number): string {
+  return truncate(normalizeWhitespace(htmlToText(text(value))), maxLength);
+}
+
+/** Cleans category names: plain text, no duplicates (ignoring case), max 20. */
+function cleanCategories(values: string[]): string[] | undefined {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const name = cleanText(value, FEED_LIMITS.maxCategoryLength);
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    result.push(name);
+    if (result.length === FEED_LIMITS.maxCategories) break;
+  }
+  return result.length > 0 ? result : undefined;
 }
 
 /**
  * Keeps the raw feed HTML so the reader view can show links and formatting.
- * Returned UNSANITIZED on purpose: the server never renders it. The browser
+ * Returned UNSANITIZED on purpose: the parser never renders it. The browser
  * sanitizes it with DOMPurify (lib/sanitize-html.ts) right before display.
  * Returns undefined for plain text (no tags) or very large content.
  */
 function keepHtml(content: string): string | undefined {
-  if (!content || content.length > MAX_CONTENT_HTML_LENGTH) return undefined;
+  if (!content || content.length > FEED_LIMITS.maxContentHtmlLength) return undefined;
   return /<[a-z][^>]*>/i.test(content) ? content : undefined;
 }
 
-/** Gets the text inside a node, whether it is a plain string or { "#text": "..." }. */
-function text(node: unknown): string {
-  if (typeof node === "string") return node.trim();
-  if (typeof node === "number" || typeof node === "boolean") return String(node);
-  const obj = asNode(node);
-  if (obj && typeof obj["#text"] === "string") return obj["#text"].trim();
-  return "";
+function clampMaxItems(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return FEED_LIMITS.maxItems;
+  return Math.min(FEED_LIMITS.maxItems, Math.max(1, Math.floor(value)));
 }
 
-/** Text of the first plain-text value in a possibly repeated tag. */
+// ---------------------------------------------------------------------------
+// Small helpers for the unknown-shaped XML tree
+// ---------------------------------------------------------------------------
+
+/** Text inside a node: a plain string, or the "#text" of { "#text": "...", "@_attr": "..." }. */
+function text(node: unknown): string {
+  const direct = toSafeString(node);
+  if (direct) return direct.trim();
+  const obj = asNode(node);
+  return obj ? toSafeString(obj["#text"]).trim() : "";
+}
+
+/** First non-empty text in a value that may be repeated. */
 function firstText(node: unknown): string {
   for (const value of asArray(node)) {
     const t = text(value);
@@ -284,8 +407,8 @@ function firstText(node: unknown): string {
 }
 
 function attr(node: XmlNode, name: string): string | undefined {
-  const value = node[`@_${name}`];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const value = toSafeString(node[`@_${name}`]).trim();
+  return value || undefined;
 }
 
 function asNode(value: unknown): XmlNode | undefined {
@@ -297,20 +420,27 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [value];
 }
 
-function firstOf(value: unknown): unknown {
-  return asArray(value)[0];
+/** Only the object nodes of a single-or-repeated value. */
+function nodes(value: unknown): XmlNode[] {
+  return asArray(value)
+    .map(asNode)
+    .filter((node): node is XmlNode => node !== undefined);
 }
 
-function cleanTitle(value: string): string {
-  return truncate(htmlToText(value).replace(/\s+/g, " "), MAX_TITLE_LENGTH);
+/** All values (objects or plain strings) of a single-or-repeated value. */
+function nodesOrText(value: unknown): unknown[] {
+  return asArray(value);
 }
 
-function cleanDescription(value: string): string | undefined {
-  const cleaned = truncate(htmlToText(value).replace(/\s+/g, " "), MAX_DESCRIPTION_LENGTH);
-  return cleaned || undefined;
-}
-
-function cleanOptional(value: string): string | undefined {
-  const cleaned = htmlToText(value).replace(/\s+/g, " ").trim();
-  return cleaned ? truncate(cleaned, MAX_TITLE_LENGTH) : undefined;
+/** Recursively removes "prefix:" from element names (not from attributes). */
+function stripPrefix(value: unknown, prefix: string): unknown {
+  if (Array.isArray(value)) return value.map((v) => stripPrefix(v, prefix));
+  const node = asNode(value);
+  if (!node) return value;
+  const result: XmlNode = {};
+  for (const [key, child] of Object.entries(node)) {
+    const name = key.startsWith(`${prefix}:`) ? key.slice(prefix.length + 1) : key;
+    result[name] = stripPrefix(child, prefix);
+  }
+  return result;
 }

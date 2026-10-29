@@ -53,7 +53,12 @@ export function decodeHtmlEntities(text: string): string {
  * The result is rendered by React as text, so it can never run as code.
  */
 export function htmlToText(html: string): string {
-  const text = html
+  // In real HTML, a raw line break is just a space; only tags like <p> or <br>
+  // create new lines. Plain text (no tags) keeps its own line breaks.
+  const looksLikeHtml = /<[a-z!/][^>]*>/i.test(html);
+  const source = looksLikeHtml ? html.replace(/\s+/g, " ") : html;
+
+  const text = source
     // Drop whole blocks whose content should never be shown.
     .replace(/<(script|style|iframe|noscript|template)[\s\S]*?<\/\1>/gi, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
@@ -66,7 +71,9 @@ export function htmlToText(html: string): string {
     .replace(/<[^>]*>/g, "");
 
   return decodeHtmlEntities(text)
-    .replace(/[ \t\f\v ]+/g, " ") // collapse spaces
+    .replace(/\r\n?/g, "\n") // Windows/old Mac line endings → \n
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "") // invisible zero-width characters
+    .replace(/[^\S\n]+/g, " ") // every other kind of whitespace → one space
     .replace(/ *\n */g, "\n") // trim spaces around line breaks
     .replace(/\n{3,}/g, "\n\n") // at most one blank line
     .trim();
@@ -78,11 +85,94 @@ export function truncate(text: string, maxLength: number): string {
   return text.slice(0, maxLength - 1).trimEnd() + "…";
 }
 
-/** Converts a date string to ISO format. Returns undefined if it is not a real date. */
+/**
+ * Converts any value into a string, safely.
+ * Strings are returned as-is, numbers and booleans become text, and
+ * everything else (objects, arrays, null, undefined) becomes "".
+ */
+export function toSafeString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return String(value);
+  return "";
+}
+
+/**
+ * Collapses all kinds of whitespace (tabs, new lines, non-breaking spaces,
+ * Unicode line separators…) into single normal spaces and trims the ends.
+ * Also removes invisible zero-width characters.
+ */
+export function normalizeWhitespace(text: string): string {
+  return text
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "") // zero-width characters
+    .replace(/\s+/g, " ") // \s also matches \u00A0, \u2028, \u3000, etc.
+    .trim();
+}
+
+/**
+ * Keeps only the first item for each URL.
+ * URLs are compared without their "#fragment", so ".../post#comments" and
+ * ".../post" count as the same article.
+ */
+export function removeDuplicateUrls<T extends { url: string }>(items: readonly T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = item.url.split("#")[0];
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** The pieces of information an article ID can be built from. */
+export type ArticleIdSource = {
+  guid?: string; // RSS <guid> or Atom <id>
+  url?: string;
+  title?: string;
+  publishedAt?: string;
+  fallback?: string; // anything else stable, e.g. the summary text
+};
+
+/**
+ * Creates a deterministic article ID: the same input always gives the same ID.
+ * Priority:
+ *   1. GUID / Atom ID
+ *   2. Article URL
+ *   3. Title + publication date
+ *   4. Fallback text (for example the summary)
+ * The feed URL is always included, so two feeds never share IDs.
+ * Format: "<feed hash>-<hash>" for 1 and 2 (unchanged from earlier versions, so
+ * articles saved before still match), "<feed hash>-t-<hash>" for 3 and
+ * "<feed hash>-f-<hash>" for 4.
+ */
+export function createArticleId(feedUrl: string, source: ArticleIdSource): string {
+  const feedHash = hashString(feedUrl);
+  const guid = source.guid?.trim();
+  if (guid) return `${feedHash}-${hashString(guid)}`;
+
+  const url = source.url?.trim();
+  if (url) return `${feedHash}-${hashString(url)}`;
+
+  const title = source.title?.trim();
+  const date = source.publishedAt?.trim();
+  if (title && date) return `${feedHash}-t-${hashString(`${title}|${date}`)}`;
+
+  // Last resort: whatever stable text we have (may be empty, still deterministic).
+  return `${feedHash}-f-${hashString(`${title ?? ""}|${source.fallback ?? ""}`)}`;
+}
+
+/**
+ * Converts a date string to an ISO string. Returns undefined if it is not a
+ * real date, or if the year is clearly wrong (before 1900 or after 2200).
+ */
 export function toIsoDate(value: string | undefined): string | undefined {
-  if (!value) return undefined;
+  if (!value?.trim()) return undefined;
   const date = new Date(value.trim());
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  const time = date.getTime();
+  if (Number.isNaN(time)) return undefined;
+  const year = date.getUTCFullYear();
+  if (year < 1900 || year > 2200) return undefined;
+  return date.toISOString();
 }
 
 /**

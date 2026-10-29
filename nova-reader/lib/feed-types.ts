@@ -17,7 +17,9 @@ export type FeedItem = {
   contentHtml?: string;
   author?: string;
   publishedAt?: string; // ISO 8601 date string, e.g. "2026-10-29T10:00:00.000Z"
+  updatedAt?: string; // ISO 8601, when the feed says the article was last changed
   imageUrl?: string;
+  categories?: string[]; // tags/topics, max 20, only present when the feed has some
 };
 
 /** A whole feed (one blog), after RSS/Atom has been normalized. */
@@ -87,5 +89,24 @@ export type ReadableArticle = Pick<FeedItem, "id" | "title" | "url" | "summary" 
   feedTitle?: string;
 };
 
+/** Optional settings for parseFeedXml(). Defaults are the limits below. */
+export type ParserOptions = {
+  /** Maximum articles to return (1–50). Default 50. */
+  maxItems?: number;
+};
+
+/** Size limits applied by the parser. Feeds are untrusted, so nothing is unbounded. */
+export const FEED_LIMITS = {
+  maxXmlBytes: 2 * 1024 * 1024, // 2 MB
+  maxItems: 50,
+  maxTitleLength: 500,
+  maxDescriptionLength: 1_000,
+  maxSummaryLength: 10_000,
+  maxAuthorLength: 300,
+  maxCategories: 20,
+  maxCategoryLength: 100,
+  maxContentHtmlLength: 200_000,
+} as const;
+
 /** Maximum number of articles the parser returns for one feed. */
-export const MAX_FEED_ITEMS = 50;
+export const MAX_FEED_ITEMS = FEED_LIMITS.maxItems;

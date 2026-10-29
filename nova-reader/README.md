@@ -133,12 +133,12 @@ flowchart LR
 
 1. The user types a URL. `FeedForm` validates it with `validateFeedUrl()`.
 2. The browser calls `/api/feed?url=...`. The server validates the URL again, then downloads it with a timeout and a size limit. Each redirect is validated too.
-3. `parseFeed()` turns RSS or Atom XML into one `Feed` object. Titles and summaries become plain text. If the feed content contains HTML, it is also kept unchanged as `contentHtml` (untrusted; the server never renders it).
+3. `parseFeedXml()` turns RSS or Atom XML into one `Feed` object. Titles and summaries become plain text. If the feed content contains HTML, it is also kept unchanged as `contentHtml` (untrusted; the server never renders it).
 4. The browser checks the JSON shape with Zod and shows the articles.
 5. "Save" writes the article (including `contentHtml`) to IndexedDB through `lib/db.ts`. Nothing about saved articles goes to the server.
 6. The reading view passes `contentHtml` through `sanitizeArticleHtml()` (DOMPurify allow-list + link checks) **every time it is displayed**, then inserts the cleaned DOM nodes. `dangerouslySetInnerHTML` is not used.
 
-**Note for PS-003:** the official challenge asks for feed parsing to happen in the browser and for the server route to return the raw response only. In this MVP the server parses, which made the first version simpler to test. `lib/feed-parser.ts` is a pure function with no server-only code, so the next step is to make the route return raw XML and call `parseFeed()` in the browser.
+**Note for PS-003:** the official challenge asks for feed parsing to happen in the browser and for the server route to return the raw response only. In this MVP the server parses, which made the first version simpler to test. `lib/feed-parser.ts` is a pure function with no server-only code, so the next step is to make the route return raw XML and call `parseFeedXml()` in the browser.
 
 ## Privacy
 
