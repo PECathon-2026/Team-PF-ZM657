@@ -46,6 +46,7 @@ Imports Tailwind and defines colour tokens (`--accent`, `--ink`, …) for light 
 | `ReaderView.tsx` | The reading view, built on the native `<dialog>`: focus moves into it and **Escape** closes it. Shows `ArticleContent` when the feed sent HTML, otherwise the plain-text summary plus a note that links are not available. |
 | `ArticleContent.tsx` | Sanitizes `contentHtml` with `sanitizeArticleHtml()` and inserts the cleaned nodes into an empty `<div>` (`replaceChildren`). Link styles come from `.article-content` in `globals.css`. |
 | `SavedArticles.tsx` | The "Saved on this device" section: loading, error, empty and list states. |
+| `OfflineCopies.tsx` | Shows how many feeds have an offline copy and a **Clear offline copies** button. |
 | `OfflineIndicator.tsx` | Badge showing "Online" or "Offline: saved articles only". `role="status"` makes screen readers announce changes. |
 | `AIWorkspacePlaceholder.tsx` | Three inactive cards for future local AI. Makes **no** network calls. |
 | `EmptyState.tsx` | A friendly "nothing here yet" box with an icon. |
@@ -95,14 +96,21 @@ Items without a valid http(s) link are skipped, because there is nothing to open
 
 ### `lib/db.ts` — Browser
 
-Dexie database named `nova-reader` with one table, `savedArticles` (primary key `id`, index `savedAt`).
+Dexie database named `nova-reader`:
+
+- **Version 1** (Stage 4): `savedArticles` (primary key `id`, index `savedAt`).
+- **Version 2** (Stage 5): adds `cachedFeeds` (primary key `requestedUrl`, index `cachedAt`). Dexie upgrades old databases automatically and keeps saved articles.
 
 | Function | What it does |
 | --- | --- |
 | `getSavedArticles()` | All saved articles, newest saved first. |
 | `saveArticle(article, feedTitle)` | Stores an article with `savedAt = now`. Saving twice just updates it. |
 | `removeSavedArticle(id)` | Deletes one article. |
-| `safely(...)` | Wraps every call so failures (for example private browsing) become a friendly `LocalStorageError`. |
+| `cacheFeed(requestedUrl, feed, items)` | Stores (or replaces) the offline copy of a feed, then deletes the oldest copies so at most 10 remain — all in one transaction. |
+| `getCachedFeed(url)` / `getLatestCachedFeed()` | Read a copy back. Records are checked with Zod; broken or outdated ones are ignored. |
+| `countCachedFeeds()` / `clearCachedFeeds()` | Count / delete offline copies (saved articles are not touched). |
+| `toLocalStorageError(error, message)` | Turns any storage error into a `LocalStorageError` with `kind` `QUOTA_EXCEEDED` (storage full), `UNAVAILABLE` (blocked / private mode / no IndexedDB) or `FAILED`. Raw browser error text is never shown to users. |
+| `closeDatabase()` | Closes the connection; tests use it to simulate a page refresh. |
 
 ### `lib/sanitize-html.ts` — Browser
 
@@ -157,7 +165,9 @@ Every file starts with `import "server-only"`, so Next.js fails the build if bro
 | `validation.test.ts` | Good URLs, trimming, empty/non-string input, malformed URLs, long URLs, bad protocols, credentials, localhost and private IPs, response schema. |
 | `feed-route.test.ts` | The API with fake DNS + network (real SSRF checks): success + schema, headers, safe redirects, missing/invalid URL, protocols, credentials, localhost, loopback, private IPs, metadata, unsafe IPv6, bad ports, hostnames resolving to private/mixed addresses, unsafe redirects, upstream errors, connection failures, timeout, oversized response, too many redirects, content types, malformed XML, non-feed XML, charsets, no leaked stack traces, rate limiting. |
 | `feed-client.test.ts` | URL encoding, calls the route not the feed, validation before calling, server errors, retryable vs permanent errors, non-JSON reply, wrong JSON shape, network failure, client timeout, cancel. |
-| `home-page.test.tsx` | Renders the real page (jsdom + React Testing Library + fake IndexedDB): labelled input, validation errors, Enter key, correct API URL, loading state + disabled button + skeleton, feed title/description/articles/author/date, missing fields, safe links, empty feed, feed text never rendered as HTML, error + **Try again**, network failure, non-JSON reply, no retry for permanent errors, previous feed kept on failure. |
+| `home-page.test.tsx` | Renders the real page (jsdom + React Testing Library + fake IndexedDB): labelled input, validation errors, Enter key, correct API URL, loading state + disabled button + skeleton, feed title/description/articles/author/date, missing fields, safe links, empty feed, feed text never rendered as HTML, error + **Try again**, network failure, non-JSON reply, no retry for permanent errors, previous feed kept on failure. Stage 5: save survives a refresh, remove, last feed shown on the next visit then updated, offline copy used when offline (no server call), page opened while offline, no-copy message, network-failure fallback, clear offline copies keeps saved articles. |
+| `db.test.ts` | Real IndexedDB behaviour via fake-indexeddb: save/list/remove, survives a refresh, ordering and updates, feed copies by URL, latest copy, replace, keep only 10, corrupted records ignored, clearing keeps saved articles, **upgrade from the Stage 4 (v1) database**, storage-full / blocked / missing-IndexedDB errors, nothing sent to the network. |
+| `home-page-storage-errors.test.tsx` | The page when storage fails: the feed still shows and explains no offline copy was kept; saving shows a clear error. |
 | `ssrf.test.ts` | IP policy (IPv4 + IPv6 special ranges), DNS validation, pinned lookup in both Node modes, DNS-rebinding simulation, port policy. |
 | `http-client.test.ts` | Real local HTTP server: body/headers, gzip, redirects not followed, Content-Length limit, streaming limit, gzip bomb, timeout, unknown encoding, refused connection, and proof that the real pinned lookup never lets a request reach 127.0.0.1. |
 

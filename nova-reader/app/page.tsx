@@ -5,30 +5,40 @@
 // Data flow:
 //   FeedForm → requestFeed() → lib/feed-client.ts → GET /api/feed → FeedList
 //   Save button → lib/db.ts (IndexedDB) → SavedArticles
+//   Every loaded feed → lib/db.ts cacheFeed() → shown again when offline / on next visit
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Rss, ShieldCheck } from "lucide-react";
 import { AIWorkspacePlaceholder } from "@/components/AIWorkspacePlaceholder";
 import { EmptyState } from "@/components/EmptyState";
 import { FeedForm } from "@/components/FeedForm";
-import { FeedList, FeedListSkeleton } from "@/components/FeedList";
+import { FeedList, FeedListSkeleton, formatDateTime } from "@/components/FeedList";
+import { OfflineCopies } from "@/components/OfflineCopies";
 import { OfflineIndicator } from "@/components/OfflineIndicator";
 import { ReaderView } from "@/components/ReaderView";
 import { SavedArticles } from "@/components/SavedArticles";
 import { StatusMessage, type StatusKind } from "@/components/StatusMessage";
-import { getSavedArticles, removeSavedArticle, saveArticle } from "@/lib/db";
+import {
+  cacheFeed,
+  clearCachedFeeds,
+  countCachedFeeds,
+  getCachedFeed,
+  getLatestCachedFeed,
+  getSavedArticles,
+  removeSavedArticle,
+  saveArticle,
+} from "@/lib/db";
 import { loadFeed } from "@/lib/feed-client";
-import type { FeedInfo, FeedItem, ReadableArticle, SavedArticle } from "@/lib/feed-types";
-import { useOnlineStatus } from "@/lib/use-online-status";
+import type { CachedFeed, FeedInfo, FeedItem, ReadableArticle, SavedArticle } from "@/lib/feed-types";
 
 // `retryUrl` is set when trying the same URL again might help.
 type Status = { kind: StatusKind; message: string; retryUrl?: string } | null;
 
-export default function HomePage() {
-  const isOnline = useOnlineStatus();
+/** The feed on screen. `cachedAt` is set when it is an offline copy. */
+type ShownFeed = { info: FeedInfo; items: FeedItem[]; cachedAt?: string };
 
-  // The feed currently on screen.
-  const [feed, setFeed] = useState<{ info: FeedInfo; items: FeedItem[] } | null>(null);
+export default function HomePage() {
+  const [feed, setFeed] = useState<ShownFeed | null>(null);
   const [isLoadingFeed, setIsLoadingFeed] = useState(false);
   const [status, setStatus] = useState<Status>(null);
 
@@ -37,6 +47,10 @@ export default function HomePage() {
   const [isLoadingSaved, setIsLoadingSaved] = useState(true);
   const [savedError, setSavedError] = useState<string | null>(null);
 
+  // Offline feed copies in IndexedDB.
+  const [cachedCount, setCachedCount] = useState(0);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+
   // The article open in the reading view (null = closed).
   const [readingArticle, setReadingArticle] = useState<ReadableArticle | null>(null);
 
@@ -44,19 +58,48 @@ export default function HomePage() {
   const activeRequest = useRef<AbortController | null>(null);
   useEffect(() => () => activeRequest.current?.abort(), []);
 
-  // Load saved articles once, when the page first opens.
+  // When the page opens: load saved articles, show the last offline copy
+  // instantly, then (if online) check for new articles in the background.
+  // State is only set inside promise callbacks (after the effect has run).
+  const onLatestCachedFeed = useEffectEvent((latest: CachedFeed | undefined) => {
+    if (!latest) return;
+    showCachedFeed(latest, navigator.onLine ? "Checking for new articles…" : "You are offline.");
+    if (navigator.onLine) void requestFeed(latest.requestedUrl, { background: true });
+  });
   useEffect(() => {
     getSavedArticles()
       .then(setSaved)
       .catch((error: Error) => setSavedError(error.message))
       .finally(() => setIsLoadingSaved(false));
+    // Storage problems here are already reported by the saved-articles section.
+    countCachedFeeds().then(setCachedCount).catch(() => {});
+    getLatestCachedFeed().then(onLatestCachedFeed).catch(() => {});
   }, []);
 
-  async function requestFeed(url: string) {
-    if (!isOnline) {
+  function showCachedFeed(cached: CachedFeed, prefix: string, retryUrl?: string) {
+    setFeed({ info: cached.feed, items: cached.items, cachedAt: cached.cachedAt });
+    setStatus({
+      kind: "info",
+      message: `${prefix} Showing your offline copy from ${formatDateTime(cached.cachedAt)}.`,
+      retryUrl,
+    });
+  }
+
+  /** Shows the offline copy of `url` if there is one. Returns false if there is none. */
+  async function tryOfflineCopy(url: string, prefix: string): Promise<boolean> {
+    const cached = await getCachedFeed(url).catch(() => undefined);
+    if (!cached) return false;
+    showCachedFeed(cached, prefix, url);
+    return true;
+  }
+
+  async function requestFeed(url: string, options: { background?: boolean } = {}) {
+    // navigator.onLine is read directly so this is always the current value.
+    if (!navigator.onLine) {
+      if (await tryOfflineCopy(url, "You are offline.")) return;
       setStatus({
         kind: "error",
-        message: "You are offline, so new feeds cannot be loaded. Your saved articles are still available.",
+        message: "You are offline and this feed has no offline copy yet. Your saved articles are still available.",
         retryUrl: url,
       });
       return;
@@ -68,7 +111,7 @@ export default function HomePage() {
     activeRequest.current = controller;
 
     setIsLoadingFeed(true);
-    setStatus({ kind: "loading", message: "Loading feed…" });
+    if (!options.background) setStatus({ kind: "loading", message: "Loading feed…" });
 
     const result = await loadFeed(url, { signal: controller.signal });
     if (controller.signal.aborted) return; // a newer request took over
@@ -78,12 +121,40 @@ export default function HomePage() {
 
     if (result.ok) {
       setFeed({ info: result.feed, items: result.items });
-      setStatus({
-        kind: "success",
-        message: `Loaded ${result.items.length} ${result.items.length === 1 ? "article" : "articles"} from ${result.feed.title}.`,
-      });
-    } else {
-      setStatus({ kind: "error", message: result.message, retryUrl: result.retryable ? url : undefined });
+      const loaded = `${options.background ? "Updated: " : "Loaded "}${result.items.length} ${
+        result.items.length === 1 ? "article" : "articles"
+      } from ${result.feed.title}.`;
+      setStatus({ kind: "success", message: loaded });
+      try {
+        await cacheFeed(url, result.feed, result.items);
+        setCachedCount(await countCachedFeeds());
+      } catch (error) {
+        // The feed is still shown; only the offline copy failed.
+        if (activeRequest.current) return; // a newer request owns the status message now
+        const reason = error instanceof Error ? error.message : "Local storage failed.";
+        setStatus({ kind: "info", message: `${loaded} An offline copy could not be kept: ${reason}` });
+      }
+      return;
+    }
+
+    // Connection problems (or a failed background update): fall back to the offline copy.
+    const connectionProblem = result.code === "NETWORK_ERROR" || result.code === "CLIENT_TIMEOUT";
+    if ((connectionProblem || options.background) && (await tryOfflineCopy(url, result.message))) return;
+
+    setStatus({ kind: "error", message: result.message, retryUrl: result.retryable ? url : undefined });
+  }
+
+  async function clearOfflineCopies() {
+    setIsClearingCache(true);
+    try {
+      await clearCachedFeeds();
+      setCachedCount(0);
+      // A copy already on screen stays visible, but is no longer stored.
+      setStatus({ kind: "success", message: "Offline copies were deleted from this device. Saved articles were kept." });
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : "Could not clear offline copies." });
+    } finally {
+      setIsClearingCache(false);
     }
   }
 
@@ -150,6 +221,7 @@ export default function HomePage() {
                 feed={feed.info}
                 items={feed.items}
                 savedIds={savedIds}
+                cachedAt={feed.cachedAt}
                 onToggleSave={toggleSave}
                 onRead={setReadingArticle}
               />
@@ -171,6 +243,7 @@ export default function HomePage() {
             onRemove={toggleSave}
             onRead={setReadingArticle}
           />
+          <OfflineCopies count={cachedCount} onClear={clearOfflineCopies} isClearing={isClearingCache} />
           <AIWorkspacePlaceholder />
         </aside>
       </main>

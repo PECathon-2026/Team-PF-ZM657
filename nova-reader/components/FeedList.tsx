@@ -1,7 +1,7 @@
 // Shows the loaded feed: its title, description and the list of articles.
 // Runs in the BROWSER (rendered inside the client page).
 
-import { ExternalLink, Inbox } from "lucide-react";
+import { ExternalLink, HardDrive, Inbox } from "lucide-react";
 import type { FeedInfo, FeedItem, ReadableArticle } from "@/lib/feed-types";
 import { ArticleCard } from "./ArticleCard";
 import { EmptyState } from "./EmptyState";
@@ -10,11 +10,13 @@ type FeedListProps = {
   feed: FeedInfo;
   items: FeedItem[];
   savedIds: Set<string>;
+  /** Set when this is an offline copy from IndexedDB, not a fresh download. */
+  cachedAt?: string;
   onToggleSave: (article: ReadableArticle) => void;
   onRead: (article: ReadableArticle) => void;
 };
 
-export function FeedList({ feed, items, savedIds, onToggleSave, onRead }: FeedListProps) {
+export function FeedList({ feed, items, savedIds, cachedAt, onToggleSave, onRead }: FeedListProps) {
   return (
     <section aria-labelledby="feed-title" className="space-y-4">
       <header className="rounded-2xl border border-line bg-surface p-4 sm:p-5">
@@ -26,6 +28,12 @@ export function FeedList({ feed, items, savedIds, onToggleSave, onRead }: FeedLi
           <span>
             {items.length} {items.length === 1 ? "article" : "articles"}
           </span>
+          {cachedAt && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-ink">
+              <HardDrive aria-hidden="true" className="size-3.5" />
+              Offline copy from <time dateTime={cachedAt}>{formatDateTime(cachedAt)}</time>
+            </span>
+          )}
           {feed.siteUrl && (
             <a
               href={feed.siteUrl}
@@ -58,6 +66,13 @@ export function FeedList({ feed, items, savedIds, onToggleSave, onRead }: FeedLi
       )}
     </section>
   );
+}
+
+/** "30 Oct 2026, 14:05" in the reader's own locale. */
+export function formatDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "an earlier visit";
+  return date.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 /** Grey placeholder cards shown while a feed is loading. Hidden from screen readers. */

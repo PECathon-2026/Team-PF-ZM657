@@ -127,7 +127,7 @@ export function validateFeedUrl(input: unknown): UrlValidationResult {
 // received really has the shape we expect before showing it.
 // ---------------------------------------------------------------------------
 
-const feedItemSchema = z.object({
+export const feedItemSchema = z.object({
   id: z.string(),
   title: z.string(),
   url: z.string(),
@@ -140,15 +140,17 @@ const feedItemSchema = z.object({
   categories: z.array(z.string()).optional(),
 });
 
+export const feedInfoSchema = z.object({
+  title: z.string(),
+  description: z.string().optional(),
+  siteUrl: z.string().optional(),
+  feedUrl: z.string(),
+});
+
 export const feedApiResponseSchema = z.discriminatedUnion("success", [
   z.object({
     success: z.literal(true),
-    feed: z.object({
-      title: z.string(),
-      description: z.string().optional(),
-      siteUrl: z.string().optional(),
-      feedUrl: z.string(),
-    }),
+    feed: feedInfoSchema,
     items: z.array(feedItemSchema),
   }),
   z.object({

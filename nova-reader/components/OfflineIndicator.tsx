@@ -1,6 +1,7 @@
 "use client";
 // Shows whether the browser is online or offline, and updates automatically.
-// Runs in the BROWSER. It is honest: offline, only saved articles work.
+// Runs in the BROWSER. It is honest: offline, only content stored on this device
+// (saved articles and offline feed copies) can be shown.
 
 import { Wifi, WifiOff } from "lucide-react";
 import { useOnlineStatus } from "@/lib/use-online-status";
@@ -21,7 +22,7 @@ export function OfflineIndicator() {
       ) : (
         <WifiOff aria-hidden="true" className="size-4 text-warning" />
       )}
-      <span>{isOnline ? "Online" : "Offline: saved articles only"}</span>
+      <span>{isOnline ? "Online" : "Offline: stored articles only"}</span>
     </p>
   );
 }

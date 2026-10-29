@@ -3,10 +3,12 @@
 // The page is rendered in a fake browser (jsdom). `fetch` is replaced with a
 // fake, so these tests check the UI logic only — no server or network.
 import "fake-indexeddb/auto"; // jsdom has no IndexedDB; this in-memory version lets the saved-articles panel work
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import Dexie from "dexie";
 import HomePage from "@/app/page";
+import { closeDatabase } from "@/lib/db";
 
 const FEED_URL = "https://mock.example/feed.xml";
 
@@ -51,11 +53,23 @@ async function submitUrl(url: string) {
   return user;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.spyOn(console, "error").mockImplementation(() => {}); // keep test output clean
+  // Every test starts with an empty local database.
+  closeDatabase();
+  await Dexie.delete("nova-reader");
 });
 
+/** Pretends the browser went offline/online, like DevTools → Network → Offline. */
+function setOnline(online: boolean) {
+  Object.defineProperty(window.navigator, "onLine", { configurable: true, get: () => online });
+  act(() => {
+    window.dispatchEvent(new Event(online ? "online" : "offline"));
+  });
+}
+
 afterEach(() => {
+  setOnline(true);
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -247,5 +261,122 @@ describe("HomePage – errors and retry", () => {
     await submitUrl("https://mock.example/broken.xml");
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("The feed is not valid XML."));
     expect(screen.getByRole("heading", { name: "The Small Web Journal" })).toBeTruthy();
+  });
+});
+
+describe("HomePage – Stage 5: local storage and offline reading", () => {
+  it("saves an article and still shows it after a refresh", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(SUCCESS)));
+    render(<HomePage />);
+    const user = await submitUrl(FEED_URL);
+    const card = await screen.findByRole("article", { name: "Why feeds still matter" });
+    await user.click(within(card).getByRole("button", { name: /^Save/ }));
+    expect(await screen.findByText("(1)")).toBeTruthy();
+
+    cleanup(); // "refresh": the page is unmounted and rendered again
+    closeDatabase();
+    render(<HomePage />);
+    const savedSection = (await screen.findByRole("heading", { name: /Saved on this device/ })).closest("section")!;
+    await waitFor(() => expect(within(savedSection).getByText("Why feeds still matter")).toBeTruthy());
+  });
+
+  it("removes a saved article", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(SUCCESS)));
+    render(<HomePage />);
+    const user = await submitUrl(FEED_URL);
+    const card = await screen.findByRole("article", { name: "Why feeds still matter" });
+    await user.click(within(card).getByRole("button", { name: /^Save/ }));
+    const savedSection = screen.getByRole("heading", { name: /Saved on this device/ }).closest("section")!;
+    await user.click(await within(savedSection).findByRole("button", { name: /^Remove/ }));
+    expect(await within(savedSection).findByText("No saved articles yet")).toBeTruthy();
+  });
+
+  it("shows the last feed instantly on the next visit, marked as an offline copy, then updates it", async () => {
+    const fetchMock = vi.fn(async () => json(SUCCESS));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<HomePage />);
+    await submitUrl(FEED_URL);
+    await screen.findByRole("heading", { name: "The Small Web Journal" });
+    await screen.findByText(/1 feed is stored on this device/);
+
+    cleanup();
+    closeDatabase();
+    const updated = { ...SUCCESS, items: [{ ...SUCCESS.items[0], title: "A brand new post" }] };
+    fetchMock.mockImplementation(async () => json(updated));
+    render(<HomePage />);
+
+    expect(await screen.findByRole("heading", { name: "The Small Web Journal" })).toBeTruthy();
+    expect(await screen.findByText("A brand new post")).toBeTruthy(); // background update replaced the copy
+    expect(await screen.findByText("Updated: 1 article from The Small Web Journal.")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the offline copy when offline, without calling the server", async () => {
+    const fetchMock = vi.fn(async () => json(SUCCESS));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<HomePage />);
+    await submitUrl(FEED_URL);
+    await screen.findByRole("heading", { name: "The Small Web Journal" });
+
+    setOnline(false);
+    expect(screen.getByText("Offline: stored articles only")).toBeTruthy();
+    await submitUrl(FEED_URL);
+
+    expect(await screen.findByText(/You are offline\. Showing your offline copy from/)).toBeTruthy();
+    expect(screen.getByText(/Offline copy from/)).toBeTruthy();
+    expect(screen.getByRole("article", { name: "Why feeds still matter" })).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // only the first, online load
+  });
+
+  it("opens with the offline copy when the page starts offline", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(SUCCESS)));
+    render(<HomePage />);
+    await submitUrl(FEED_URL);
+    await screen.findByText(/1 feed is stored on this device/);
+    cleanup();
+    closeDatabase();
+
+    setOnline(false);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    render(<HomePage />);
+    expect(await screen.findByText(/You are offline\. Showing your offline copy/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "The Small Web Journal" })).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("explains when there is no offline copy for a URL", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    render(<HomePage />);
+    setOnline(false);
+    await submitUrl("https://never-loaded.example/feed");
+    expect((await screen.findByRole("alert")).textContent).toContain("this feed has no offline copy yet");
+  });
+
+  it("falls back to the offline copy when the network fails", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(json(SUCCESS)).mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<HomePage />);
+    await submitUrl(FEED_URL);
+    await screen.findByRole("heading", { name: "The Small Web Journal" });
+
+    await submitUrl(FEED_URL);
+    expect(await screen.findByText(/Could not reach the NOVA Reader server.*Showing your offline copy/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("clears offline copies but keeps saved articles", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(SUCCESS)));
+    render(<HomePage />);
+    const user = await submitUrl(FEED_URL);
+    const card = await screen.findByRole("article", { name: "Why feeds still matter" });
+    await user.click(within(card).getByRole("button", { name: /^Save/ }));
+    await screen.findByText(/1 feed is stored on this device/);
+
+    await user.click(screen.getByRole("button", { name: "Clear offline copies" }));
+    expect(await screen.findByText("Offline copies were deleted from this device. Saved articles were kept.")).toBeTruthy();
+    expect(screen.getByText(/No feeds are stored yet/)).toBeTruthy();
+    const savedSection = screen.getByRole("heading", { name: /Saved on this device/ }).closest("section")!;
+    expect(within(savedSection).getByText("Why feeds still matter")).toBeTruthy();
   });
 });

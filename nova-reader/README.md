@@ -18,6 +18,8 @@ NOVA Reader is a small, privacy-first and offline-friendly reader for RSS and At
 - Clear loading (disabled button, status message, skeleton), success, empty-feed and error states, with a **Try again** button for errors that may be temporary. Older requests are cancelled when a new one starts, and the browser gives up after 20 seconds.
 - Reading view (accessible dialog) showing the feed's content with **working, clearly styled links**. Feed HTML is sanitized with DOMPurify in the browser, relative links are resolved against the article URL, and only http(s) links are kept.
 - Save and remove articles, stored locally with Dexie.js + IndexedDB, persisting across refreshes.
+- **Offline copies of feeds:** the last 10 feeds you load are stored in IndexedDB. The most recent one appears instantly when you open the app (marked "Offline copy from …") and is refreshed in the background when online. Offline, or when the connection fails, the stored copy is shown instead of an error. A **Clear offline copies** button deletes them (saved articles are kept).
+- Clear messages when local storage is full, blocked (e.g. private browsing) or fails.
 - Online/offline indicator that updates automatically.
 - Placeholder panel for future **local** AI features (does nothing yet, sends nothing).
 - Responsive layout, light and dark mode, keyboard-accessible controls, visible focus styles.
@@ -59,6 +61,7 @@ nova-reader/
 │   ├── ArticleContent.tsx    # sanitized article HTML with links
 │   ├── SavedArticles.tsx     # "Saved on this device" section
 │   ├── OfflineIndicator.tsx  # online/offline badge
+│   ├── OfflineCopies.tsx     # count of offline feed copies + clear button
 │   ├── AIWorkspacePlaceholder.tsx  # future local-AI panel (inactive)
 │   ├── EmptyState.tsx        # "nothing here yet" box
 │   └── StatusMessage.tsx     # loading / success / error message
@@ -127,7 +130,7 @@ Tests never use the real internet. Route tests use a fake DNS resolver and a fak
 flowchart LR
   subgraph Browser
     UI[page.tsx + components]
-    DB[(IndexedDB\nsavedArticles)]
+    DB[(IndexedDB\nsavedArticles + cachedFeeds)]
   end
   subgraph Server[Next.js server]
     API["GET /api/feed"]
@@ -147,7 +150,7 @@ flowchart LR
 2. The browser calls `/api/feed?url=...`. The server validates the URL again, then downloads it with a timeout and a size limit. Each redirect is validated too.
 3. `parseFeedXml()` turns RSS or Atom XML into one `Feed` object. Titles and summaries become plain text. If the feed content contains HTML, it is also kept unchanged as `contentHtml` (untrusted; the server never renders it).
 4. The browser checks the JSON shape with Zod and shows the articles.
-5. "Save" writes the article (including `contentHtml`) to IndexedDB through `lib/db.ts`. Nothing about saved articles goes to the server.
+5. "Save" writes the article (including `contentHtml`) to IndexedDB through `lib/db.ts`. Every successfully loaded feed is also stored as an offline copy (`cachedFeeds`, max 10). Nothing in IndexedDB is ever sent to the server.
 6. The reading view passes `contentHtml` through `sanitizeArticleHtml()` (DOMPurify allow-list + link checks) **every time it is displayed**, then inserts the cleaned DOM nodes. `dangerouslySetInnerHTML` is not used.
 
 **Note for PS-003:** the official challenge asks for feed parsing to happen in the browser and for the server route to return the raw response only. In this MVP the server parses, which made the first version simpler to test. `lib/feed-parser.ts` is a pure function with no server-only code, so the next step is to make the route return raw XML and call `parseFeedXml()` in the browser.
@@ -155,7 +158,7 @@ flowchart LR
 ## Privacy
 
 - **No accounts and no tracking.** There is no login, no analytics, no cookies set by the app.
-- **Saved articles stay on your device** in IndexedDB. The server never receives them.
+- **Saved articles and offline feed copies stay on your device** in IndexedDB. The server never receives them. Anyone using the same browser profile can see them; use **Clear offline copies** and **Remove** to delete them.
 - **Feed URLs are fetched through the server route.** The blog sees a request from the server, not from you. The server does not store the URL or the feed; it only logs unexpected errors to its own console.
 - **No remote images are loaded**, so blogs cannot track who views the article list.
 - **No cloud AI is used.** The AI panel is a placeholder only.
@@ -185,19 +188,21 @@ Please read this before deploying publicly.
 
 ## Offline behavior
 
-What works offline:
+What works offline (once the page is open):
 
-- If the page is already open, saved articles stay visible and readable.
-- The offline badge changes to "Offline: saved articles only".
-- Trying to load a feed shows a clear error instead of failing silently.
+- **Saved articles** stay visible and readable, including their links.
+- **Offline feed copies:** loading a feed you loaded before shows its stored copy with the notice "You are offline. Showing your offline copy from …". The feed header shows an "Offline copy from …" badge.
+- When the page opens, the most recent copy is shown immediately; if online, it is updated in the background ("Updated: …").
+- If the server cannot be reached or times out, the stored copy is shown with a **Try again** button.
+- The badge changes to "Offline: stored articles only". A feed with no stored copy shows a clear error.
 
 What does **not** work offline yet:
 
-- **Opening or refreshing the page while offline.** There is no service worker yet, so the browser cannot load the app without a connection. Saved articles are still in IndexedDB and appear again once the page loads.
-- Loading new feeds (this needs the internet).
-- The last loaded feed is not cached; only articles you saved are kept.
+- **Opening or refreshing the page while offline.** There is no service worker yet, so the browser cannot load the app itself without a connection. The data is still in IndexedDB and appears as soon as the page loads.
+- Loading feeds you have never loaded before.
+- Only the last 10 feeds are kept. The browser may also delete site data when the device is low on space (persistent storage is not requested yet).
 
-Note: the browser's "online" signal only means "connected to a network". A request can still fail on a bad connection, and the app shows an error when that happens.
+Note: the browser's "online" signal only means "connected to a network". A request can still fail on a bad connection; the app then falls back to the stored copy when it has one.
 
 ## Future Local AI Architecture
 
@@ -227,7 +232,7 @@ page.tsx  ──postMessage──►  ai.worker.ts (Web Worker)
 7. **Add feed health monitoring** — show dead, slow or broken feeds without breaking the timeline.
 8. **Add encrypted local data export** — export saved articles (and later OPML) as an encrypted file.
 
-Also needed for the full PS-003 challenge: multiple subscriptions with one chronological timeline, read/unread state, per-feed filtering, a service worker for offline loading, and moving feed parsing to the browser.
+Also needed for the full PS-003 challenge: multiple subscriptions with one chronological timeline, read/unread state, per-feed filtering, a service worker so the app itself opens offline, and moving feed parsing to the browser.
 
 ## Contributing
 

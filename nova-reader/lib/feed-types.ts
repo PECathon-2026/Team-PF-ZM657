@@ -86,6 +86,18 @@ export type SavedArticle = {
   feedTitle: string;
 };
 
+/**
+ * An offline copy of a feed, stored only in this browser (IndexedDB).
+ * `requestedUrl` is the URL the user typed (after validation); it is the key,
+ * so "load this URL again" finds the copy even if the feed redirected.
+ */
+export type CachedFeed = {
+  requestedUrl: string;
+  feed: FeedInfo;
+  items: FeedItem[];
+  cachedAt: string; // ISO date of when this copy was stored
+};
+
 /** The fields the UI needs to show or read an article. Both FeedItem and SavedArticle fit. */
 export type ReadableArticle = Pick<FeedItem, "id" | "title" | "url" | "summary" | "contentHtml" | "author" | "publishedAt"> & {
   feedTitle?: string;
