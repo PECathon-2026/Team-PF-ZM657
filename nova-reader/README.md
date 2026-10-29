@@ -88,6 +88,7 @@ nova-reader/
 │   ├── use-article-extraction.ts # BROWSER: stored copy → download → extract → store
 │   ├── db.ts                 # BROWSER: IndexedDB via Dexie
 │   ├── sanitize-html.ts      # BROWSER: DOMPurify + safe links
+│   ├── html-limits.ts        # BROWSER: refuses too-deeply nested HTML before parsing
 │   ├── use-online-status.ts  # BROWSER: online/offline React hook
 │   ├── utils.ts              # small helpers (hash, html→text, dates)
 │   ├── radar.ts              # BROWSER-safe pure radar calculations (Stage 8)
@@ -110,6 +111,7 @@ nova-reader/
 ├── docs/                     # FILE_GUIDE, SECURITY, PRIVACY, DEPLOYMENT, BROWSER_SUPPORT,
 │                             # RELEASE_CHECKLIST, HANDOFF (Stage 9–10), screenshot
 ├── CHANGELOG.md              # release notes (Stage 10)
+├── bugs.md                   # bug tracker (QA findings and their status)
 ├── .env.example              # no variables needed
 └── package.json
 ```

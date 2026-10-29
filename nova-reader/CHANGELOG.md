@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — bug fixes (see `bugs.md`)
+
+- **Fix #1:** `truncate()` returns `""` for limits below 1 or `NaN` (was `"hell…"` for `truncate("hello", 0)`).
+- **Fix #2:** very deeply nested HTML no longer stalls the tab. The new `lib/html-limits.ts` checks the nesting depth before parsing.
+  - The sanitizer shows such content as plain text.
+  - The article extractor reports `TOO_COMPLEX`.
+- **Tests:** `tests/utils.test.ts`, `tests/html-limits.test.ts`, `e2e/deep-nesting.spec.ts`.
+- **Known, not fixed:** `htmlToText()` is slow on many unclosed `<script` tags (`bugs.md` NEW-1), and `truncate()` can split an emoji (NEW-2).
+
 ## 1.0.0-beta.1 — 2026-10-30 (Stage 10: release candidate)
 
 First public beta. No new user-facing features in this release; it validates and documents Stages 1–9.

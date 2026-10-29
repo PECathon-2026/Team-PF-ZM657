@@ -196,11 +196,15 @@ Dexie database named `nova-reader`:
 | `countExtractedArticles()` / `clearOfflineCopies()` | Count stored full articles / delete all feed copies and every full article that does not belong to a saved article. |
 | `closeDatabase()` | Closes the connection; tests use it to simulate a page refresh. |
 
+### `lib/html-limits.ts` — Browser (bug fix #2)
+
+`isHtmlTooDeeplyNested(html)` scans the raw HTML once, using `indexOf` only, and estimates how deeply elements are nested. It ignores void tags, tags whose end tag is optional, comments and script/style content. Deeper than `MAX_HTML_NESTING_DEPTH` (500) counts as too complex. Browsers parse such markup very slowly (quadratic beyond Chromium's ~512-level cap), so this runs **before** any parsing.
+
 ### `lib/sanitize-html.ts` — Browser
 
 | Function | What it does |
 | --- | --- |
-| `sanitizeArticleHtml(html, baseUrl)` | Runs DOMPurify with a short allow-list of reading tags (`p`, `a`, `em`, lists, headings…) and only the `href`/`title` attributes (`data-*` attributes are dropped too, Stage 10). Returns a `DocumentFragment`. |
+| `sanitizeArticleHtml(html, baseUrl)` | Runs DOMPurify with a short allow-list of reading tags (`p`, `a`, `em`, lists, headings…) and only the `href`/`title` attributes (`data-*` attributes are dropped too, Stage 10). Returns a `DocumentFragment`. Too-deeply nested HTML is never parsed; it becomes plain `<p>` paragraphs (text only). |
 | `secureLink(link, baseUrl)` | Resolves the link against the article URL. Keeps it only if it is http(s), otherwise removes `href` (the text stays). Adds `target="_blank"` and `rel="noopener noreferrer nofollow ugc"`. |
 
 ### `lib/server/` — Server only
@@ -269,8 +273,10 @@ Every file starts with `import "server-only"`, so Next.js fails the build if bro
 | `radar-page.test.tsx` | `/radar` with real IndexedDB behaviour: empty state, summary numbers, topics/sources/languages, chart present, honest notes, keyboard tooltip, table view, Refresh, no network use, storage unavailable. |
 | `app-errors.test.ts` | Every API and AI code maps to an app code; raw messages never used; storage, timeout and chunk-load errors; redaction of credentials, query strings, secrets, bearer tokens and paths; one-line logs; JSON 404 for unknown API paths. |
 | `error-pages.test.tsx` | Error page shows only a safe message, Try again calls `retry`, a link back, a reference; logs are redacted; 404 page has a main landmark. |
-| `e2e/*.spec.ts` (Playwright) | `smoke` (feed, save, read, radar, 404), `security` (headers, real API errors, no CSP violations, no third-party requests, CSP blocks others, local AI under CSP), `accessibility` (axe light + dark, keyboard), `offline` (opens and reloads offline; API never cached). |
+| `e2e/*.spec.ts` (Playwright) | `smoke` (feed, save, read, radar, 404), `security` (headers, real API errors, no CSP violations, no third-party requests, CSP blocks others, local AI under CSP), `accessibility` (axe light + dark, keyboard), `offline` (opens and reloads offline; API never cached), `deep-nesting` (hostile nested feed HTML and 3 MB page don't freeze the reader). |
 | `ssrf.test.ts` | IP policy (IPv4 + IPv6 special ranges), DNS validation, pinned lookup in both Node modes, DNS-rebinding simulation, port policy. |
+| `utils.test.ts` | `truncate()`: unchanged short text, never longer than the limit, ellipsis, limit 1, and limits of 0, negative, `NaN`, fractional and Infinity (bug #1). |
+| `html-limits.test.ts` | Depth check: boundary, unclosed tags, no false positives, void/optional tags, comments/scripts, broken input, 3 MB hostile input. Sanitizer and extractor stay fast on deep nesting; safe text fallback (bug #2). |
 | `release-regressions.test.ts` (Stage 10) | Unusual URL spellings blocked on the server (hex/octal/short/decimal IPv4, trailing dots, IPv4-mapped/compatible IPv6, NAT64, 6to4, zone IDs, metadata hosts, bad ports, backslash and credential tricks), punycode hosts accepted; sanitizer: encoded `javascript:` links, SVG/MathML, `style`/`data-*`/event attributes, no remote media/`<base>`/`<meta>`, safe new-tab links, deeply nested input. |
 | `http-client.test.ts` | Real local HTTP server: body/headers, gzip, redirects not followed, Content-Length limit, streaming limit, gzip bomb, timeout, unknown encoding, refused connection, and proof that the real pinned lookup never lets a request reach 127.0.0.1. |
 

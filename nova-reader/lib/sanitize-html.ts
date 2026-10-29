@@ -8,7 +8,8 @@
 //      article's URL, allow only http(s), and open links in a new tab safely.
 
 import DOMPurify from "dompurify";
-import { toSafeHttpUrl } from "./utils";
+import { isHtmlTooDeeplyNested } from "./html-limits";
+import { htmlToText, toSafeHttpUrl } from "./utils";
 
 // Simple reading formatting only. <img> is intentionally NOT allowed, so blogs
 // cannot track readers with remote images (same privacy rule as the list view).
@@ -31,6 +32,11 @@ const ALLOWED_ATTR = ["href", "title"];
  *                are resolved against it, as they would be on the original page.
  */
 export function sanitizeArticleHtml(html: string, baseUrl: string): DocumentFragment {
+  // Very deeply nested markup makes the browser's HTML parser extremely slow
+  // (it could freeze the tab). Show such content as plain paragraphs instead,
+  // without ever parsing it as HTML. See lib/html-limits.ts.
+  if (isHtmlTooDeeplyNested(html)) return plainTextFragment(html);
+
   const fragment = DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
@@ -58,4 +64,16 @@ function secureLink(link: HTMLAnchorElement, baseUrl: string): void {
   // noopener/noreferrer: the new tab cannot control this page or see where you came from.
   // nofollow/ugc: standard hints that the link comes from third-party content.
   link.setAttribute("rel", "noopener noreferrer nofollow ugc");
+}
+
+/** Plain-text fallback: one <p> per paragraph, filled with textContent (never parsed as HTML). */
+function plainTextFragment(html: string): DocumentFragment {
+  const fragment = document.createDocumentFragment();
+  for (const paragraph of htmlToText(html).split(/\n{2,}/)) {
+    if (!paragraph.trim()) continue;
+    const p = document.createElement("p");
+    p.textContent = paragraph;
+    fragment.append(p);
+  }
+  return fragment;
 }

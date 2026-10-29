@@ -79,10 +79,16 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
-/** Shortens text to `maxLength` characters and adds "…" if it was cut. */
+/**
+ * Shortens text to at most `maxLength` characters and adds "…" if it was cut.
+ * A limit below 1 (or NaN) gives "", because there is no room for any text.
+ * Fractional limits are rounded down.
+ */
 export function truncate(text: string, maxLength: number): string {
-  if (text.length <= maxLength) return text;
-  return text.slice(0, maxLength - 1).trimEnd() + "…";
+  const limit = Math.floor(maxLength);
+  if (!(limit >= 1)) return ""; // also catches NaN
+  if (text.length <= limit) return text;
+  return text.slice(0, limit - 1).trimEnd() + "…";
 }
 
 /**

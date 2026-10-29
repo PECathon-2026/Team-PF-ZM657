@@ -10,6 +10,7 @@
 
 import { Readability } from "@mozilla/readability";
 import type { ExtractedArticle } from "./feed-types";
+import { isHtmlTooDeeplyNested } from "./html-limits";
 import { normalizeWhitespace, truncate } from "./utils";
 
 /** Pages with more elements than this are not processed (protects the browser tab). */
@@ -39,6 +40,10 @@ const MESSAGES: Record<ExtractionFailureReason, string> = {
  * @param articleUrl The article URL from the feed, used as the storage key.
  */
 export function extractReadableArticle(html: string, pageUrl: string, articleUrl: string): ExtractionResult {
+  // Checked BEFORE parsing: very deep nesting makes DOMParser itself extremely
+  // slow, so the element limit below would come too late. See lib/html-limits.ts.
+  if (isHtmlTooDeeplyNested(html)) return failure("TOO_COMPLEX");
+
   let doc: Document;
   try {
     doc = new DOMParser().parseFromString(html, "text/html");
