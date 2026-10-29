@@ -56,6 +56,9 @@ export class InMemoryRateLimiter implements RateLimiter {
 /** Shared limiter for GET /api/feed: 30 requests per minute per client. */
 export const feedRateLimiter: RateLimiter = new InMemoryRateLimiter(30, 60_000);
 
+/** Separate limiter for GET /api/article (Stage 6): 30 article pages per minute per client. */
+export const articleRateLimiter: RateLimiter = new InMemoryRateLimiter(30, 60_000);
+
 // A random salt per server process, so stored keys cannot be turned back into IPs.
 const SALT = randomBytes(16).toString("hex");
 

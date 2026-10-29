@@ -16,6 +16,8 @@
   --danger-soft: #fbeceb;
   --warning: #8a5a00;
   --warning-soft: #fdf3dd;
+  /* Stage 8 chart marks: validated with the dataviz palette checker (lightness, chroma, 3:1 contrast). */
+  --chart-mark: #0b7d62;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -33,6 +35,7 @@
     --danger-soft: #3a1f1d;
     --warning: #f0c36a;
     --warning-soft: #3a3020;
+    --chart-mark: #22a982;
   }
 }
 
@@ -50,6 +53,7 @@
   --color-danger-soft: var(--danger-soft);
   --color-warning: var(--warning);
   --color-warning-soft: var(--warning-soft);
+  --color-chart-mark: var(--chart-mark);
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", serif;
 }
@@ -68,8 +72,12 @@ body {
 }
 
 /* Sanitized article HTML in the reader view (components/ArticleContent.tsx). */
-.article-content > * + * {
-  margin-top: 1.25rem;
+/* Space between blocks at any depth (extracted articles nest content in <div>s). */
+.article-content :where(p, ul, ol, dl, blockquote, pre, table, figure, h2, h3, h4, h5, h6) {
+  margin-block: 0 1.25rem;
+}
+.article-content :where(h2, h3, h4, h5, h6) {
+  margin-top: 1.75rem;
 }
 .article-content a[href] {
   color: var(--accent);
@@ -100,6 +108,20 @@ body {
 .article-content h4 {
   font-weight: 600;
   line-height: 1.3;
+}
+.article-content table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+}
+.article-content th,
+.article-content td {
+  border: 1px solid var(--line);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
 }
 .article-content pre {
   overflow-x: auto;

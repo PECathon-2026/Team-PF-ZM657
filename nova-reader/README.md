@@ -17,11 +17,13 @@ NOVA Reader is a small, privacy-first and offline-friendly reader for RSS and At
 - Article list with title, date, author, summary and a link to the original (opens in a new tab with `rel="noopener noreferrer"`).
 - Clear loading (disabled button, status message, skeleton), success, empty-feed and error states, with a **Try again** button for errors that may be temporary. Older requests are cancelled when a new one starts, and the browser gives up after 20 seconds.
 - Reading view (accessible dialog) showing the feed's content with **working, clearly styled links**. Feed HTML is sanitized with DOMPurify in the browser, relative links are resolved against the article URL, and only http(s) links are kept.
+- **Full-article reading view (Stage 6):** opening an article shows the feed text at once, then loads the original page through `GET /api/article` (same SSRF protection as feeds), extracts the main text in the browser with **Mozilla Readability**, and shows it after **DOMPurify** sanitizing. Menus, ads, scripts, images and embeds are removed. A toggle switches between *Full article* and *Feed text*. If extraction fails, a clear reason is shown, the feed text stays, and **Try again** appears when it could help. The original link is always shown. Full articles are stored in IndexedDB (max 50; saved articles' full text is never evicted) so they open offline.
 - Save and remove articles, stored locally with Dexie.js + IndexedDB, persisting across refreshes.
 - **Offline copies of feeds:** the last 10 feeds you load are stored in IndexedDB. The most recent one appears instantly when you open the app (marked "Offline copy from …") and is refreshed in the background when online. Offline, or when the connection fails, the stored copy is shown instead of an error. A **Clear offline copies** button deletes them (saved articles are kept).
 - Clear messages when local storage is full, blocked (e.g. private browsing) or fails.
+- **Personal Knowledge Radar (Stage 8, `/radar`):** a private summary of your own reading, calculated in the browser from data already on the device — saved-article count, sources, topics (feed categories + frequent words), articles saved per week, stored reading time and languages of stored full articles. Every chart has a hover/focus tooltip and a *Show as table* view. The radar is not stored and nothing is sent anywhere. It also lists what it **cannot** see (AI summaries, reading history), because the app does not store those.
 - Online/offline indicator that updates automatically.
-- Placeholder panel for future **local** AI features (does nothing yet, sends nothing).
+- **Optional local AI (Stage 7):** a *Local AI* panel checks whether the browser can run AI (Web Worker + WebAssembly; WebGPU when available), shows the model, size and source, and downloads the model **only after you click**. Then **Summarize locally** in the reading view summarizes the article **inside your browser** (Web Worker), with download and processing progress, **Stop**, clear errors (unsupported, download failed, out of memory, WebGPU failure → CPU mode), validated plain-text output, and *Turn off* / *Delete downloaded model*. Without AI support everything else works as before.
 - Responsive layout, light and dark mode, keyboard-accessible controls, visible focus styles.
 - 67 automated tests (parser, validation, API route, HTML sanitizer).
 
@@ -39,6 +41,8 @@ See [Future GitHub issues](#future-github-issues) below. In short: multiple subs
 | Local database | Dexie.js 4 over IndexedDB |
 | Validation | Zod 4 |
 | HTML sanitizing | DOMPurify 3 (tests use jsdom) |
+| Article extraction | Mozilla Readability 0.6 (in the browser) |
+| Local AI (optional) | Transformers.js 4.3.1 (ONNX Runtime Web: WebGPU or WebAssembly) in a Web Worker |
 | XML parsing | fast-xml-parser 5 |
 | Icons | Lucide React |
 | Linting | ESLint 9 (Next.js config) |
@@ -50,8 +54,10 @@ See [Future GitHub issues](#future-github-issues) below. In short: multiple subs
 nova-reader/
 ├── app/
 │   ├── api/feed/route.ts     # SERVER: thin route, calls lib/server/feed-handler.ts
+│   ├── api/article/route.ts  # SERVER: thin route, calls lib/server/article-handler.ts
 │   ├── layout.tsx            # SERVER: HTML shell, page title
 │   ├── page.tsx              # BROWSER: main page, connects everything
+│   ├── radar/page.tsx        # BROWSER: Personal Knowledge Radar (Stage 8)
 │   └── globals.css           # colours, focus styles, Tailwind import
 ├── components/               # BROWSER: UI pieces
 │   ├── FeedForm.tsx          # URL input + example feeds
@@ -62,25 +68,38 @@ nova-reader/
 │   ├── SavedArticles.tsx     # "Saved on this device" section
 │   ├── OfflineIndicator.tsx  # online/offline badge
 │   ├── OfflineCopies.tsx     # count of offline feed copies + clear button
-│   ├── AIWorkspacePlaceholder.tsx  # future local-AI panel (inactive)
+│   ├── AIWorkspace.tsx       # Local AI panel: support, download, progress, errors
+│   ├── LocalAiProvider.tsx   # shared local AI state (one worker for the page)
+│   ├── LocalSummary.tsx      # "Summarize locally" in the reading view
+│   ├── radar/                # StatTile, BarList, WeeklyColumns, DataTable (Stage 8)
 │   ├── EmptyState.tsx        # "nothing here yet" box
 │   └── StatusMessage.tsx     # loading / success / error message
 ├── lib/
 │   ├── feed-types.ts         # shared TypeScript types
 │   ├── feed-parser.ts        # RSS/Atom → Feed (pure function)
 │   ├── validation.ts         # URL checks + API response schema (Zod)
-│   ├── feed-client.ts        # BROWSER: calls /api/feed, timeout, cancel, error mapping
+│   ├── api-request.ts        # BROWSER: shared API caller (timeout, cancel, Zod check)
+│   ├── feed-client.ts        # BROWSER: calls /api/feed
+│   ├── article-client.ts     # BROWSER: calls /api/article
+│   ├── article-extractor.ts  # BROWSER: Readability on an inert, cloned document
+│   ├── use-article-extraction.ts # BROWSER: stored copy → download → extract → store
 │   ├── db.ts                 # BROWSER: IndexedDB via Dexie
 │   ├── sanitize-html.ts      # BROWSER: DOMPurify + safe links
 │   ├── use-online-status.ts  # BROWSER: online/offline React hook
 │   ├── utils.ts              # small helpers (hash, html→text, dates)
+│   ├── radar.ts              # BROWSER-safe pure radar calculations (Stage 8)
 │   └── server/               # SERVER ONLY (import "server-only")
 │       ├── feed-handler.ts   # the /api/feed logic: rate limit → validate → fetch → parse
-│       ├── feed-fetcher.ts   # redirects, status, content type, charset
+│       ├── article-handler.ts # the /api/article logic: rate limit → validate → fetch (no parsing)
+│       ├── responses.ts      # shared JSON + security headers
+│       ├── feed-fetcher.ts   # shared safe download loop: redirects, status, content type, charset
 │       ├── http-client.ts    # one GET with pinned DNS, timeout, size limit, decompression
 │       ├── ssrf.ts           # IP policy, DNS validation, pinned lookup, port policy
 │       ├── rate-limit.ts     # RateLimiter interface + in-memory MVP placeholder
 │       └── errors.ts         # safe, user-facing error type
+├── lib/ai/                   # Stage 7: config, capabilities, protocol, text checks, client, worker logic
+├── workers/ai.worker.ts      # Stage 7: the AI Web Worker (Transformers.js)
+├── scripts/copy-onnx-wasm.mjs # copies the ONNX Runtime engine into public/ort/ (dev + build)
 ├── tests/                    # Vitest tests
 ├── docs/                     # screenshot + file-by-file guide
 ├── .env.example              # no variables needed yet
@@ -101,6 +120,8 @@ npm run dev
 ```
 
 Open http://localhost:3000. No environment variables are required. `.env.example` explains this.
+
+Notes: `.npmrc` sets `onnxruntime-node-install=skip` (a server-only optional download that the browser AI does not need). `npm run dev` and `npm run build` first copy the ONNX Runtime engine files into `public/ort/` (ignored by git).
 
 ## Development commands
 
@@ -130,7 +151,7 @@ Tests never use the real internet. Route tests use a fake DNS resolver and a fak
 flowchart LR
   subgraph Browser
     UI[page.tsx + components]
-    DB[(IndexedDB\nsavedArticles + cachedFeeds)]
+    DB[(IndexedDB\nsavedArticles + cachedFeeds\n+ extractedArticles)]
   end
   subgraph Server[Next.js server]
     API["GET /api/feed"]
@@ -155,13 +176,43 @@ flowchart LR
 
 **Note for PS-003:** the official challenge asks for feed parsing to happen in the browser and for the server route to return the raw response only. In this MVP the server parses, which made the first version simpler to test. `lib/feed-parser.ts` is a pure function with no server-only code, so the next step is to make the route return raw XML and call `parseFeedXml()` in the browser.
 
+### Article extraction (Stage 6)
+
+```
+Reader opens ─► stored full article in IndexedDB? ──yes──► show it (works offline)
+                     │ no
+                     ▼
+     GET /api/article?url=…  (server: same SSRF checks, redirects, 10 s, 3 MB, HTML only;
+                     │        returns raw HTML INSIDE JSON, never as a web page; no parsing)
+                     ▼
+     DOMParser (inert: no scripts, no images) → clone → Readability.parse()
+                     ▼
+     store in IndexedDB ─► DOMPurify allow-list + safe links ─► reading view
+```
+
+Why extraction is in the browser: the PS-003 brief says the fetch route must not parse content, parsing untrusted HTML on the server would need jsdom (bigger attack surface), and the browser's `DOMParser` creates documents that never run scripts or load resources.
+
+### Personal Knowledge Radar (Stage 8)
+
+| What is shown | Based on (stored locally) |
+| --- | --- |
+| Saved articles, sources | `savedArticles` (feed title, or the website's host name) |
+| Topics | Feed **categories** of saved articles (from `cachedFeeds`, only while that feed is cached) **or** words that appear in titles, summaries and stored full text. Counted per article. Common English words are removed. With 5+ saved articles a word must appear in 2+ articles |
+| Articles saved per week | `savedArticles.savedAt`, last 8 weeks, weeks start on Monday (local time) |
+| Full articles, reading time | `extractedArticles` — words counted from the stored text, 200 words per minute |
+| Languages | `extractedArticles.lang`, as declared by each page |
+| **Not shown (not stored)** | Local AI summaries, reading time, a history of opened articles, categories of saved articles whose feed is no longer cached |
+
+Charts are plain SVG/HTML (no chart library): one validated colour (`--chart-mark`, light `#0b7d62`, dark `#22a982`, checked with a palette validator for lightness, chroma and 3:1 contrast), thin bars with 4px rounded ends, values at bar tips, hover **and** keyboard-focus tooltips, and a table view. The weekly chart is drawn at the container's real width so its text stays readable on phones.
+
 ## Privacy
 
 - **No accounts and no tracking.** There is no login, no analytics, no cookies set by the app.
 - **Saved articles and offline feed copies stay on your device** in IndexedDB. The server never receives them. Anyone using the same browser profile can see them; use **Clear offline copies** and **Remove** to delete them.
 - **Feed URLs are fetched through the server route.** The blog sees a request from the server, not from you. The server does not store the URL or the feed; it only logs unexpected errors to its own console.
 - **No remote images are loaded**, so blogs cannot track who views the article list.
-- **No cloud AI is used.** The AI panel is a placeholder only.
+- **The radar is computed on demand** in the browser and not saved; it makes no network requests.
+- **No cloud AI is used.** Local AI runs in a Web Worker in your browser; article text is never sent anywhere. Turning it on downloads the model files once from **huggingface.co** (Hugging Face sees your IP address and which model was downloaded — not what you read). The ONNX Runtime engine is served from this app (`/ort/`), not a third-party CDN.
 - No external fonts or scripts are loaded; the app uses your system fonts.
 
 ## Security limitations
@@ -181,7 +232,8 @@ Please read this before deploying publicly.
   - **Public targets can still be abused.** The route can be used to make requests to any public website (e.g. to hide the caller's IP). Rate limiting reduces, but does not remove, this.
 - **Rate limiting is an in-memory placeholder.** 30 requests/minute per client, keyed by a salted hash of the IP (raw IPs are never stored). It works per server instance only and resets on restart; on serverless hosting each instance has its own counter. Client IPs come from `x-forwarded-for`, which is only trustworthy behind a platform that sets it (Vercel does); elsewhere clients can fake it. **Use a shared store (e.g. Redis/Upstash) or a platform firewall in production** by implementing the `RateLimiter` interface.
 - **Feeds are untrusted.** Feed HTML is sanitized with DOMPurify (short tag allow-list, no scripts, styles, event handlers, iframes, forms or images) and only http(s) links are kept, but the app **does not guarantee that every feed is safe or valid**. Links open other websites, which may be unsafe.
-- **Links only come from the feed.** If a feed provides only a plain-text summary, links that exist only on the original web page are not shown; the reader view says so. Full-page extraction (Readability) is a planned issue.
+- **Article pages are untrusted.** The server only downloads them (same SSRF protection as feeds) and returns them as JSON data with `Content-Security-Policy: default-src 'none'`, so they can never run as part of this site. Extraction runs on an inert, cloned document, and output is always sanitized. Readability can still mis-detect the main content (e.g. on pages that need JavaScript, paywalls, or home pages); then the feed text is shown with an explanation.
+- **Using the article route reveals reading to the server operator** (which article URL was requested). The server does not store or log URLs, and the blog sees the server, not the reader.
 - Feed text is decoded using the Content-Type charset, a byte-order mark or the XML declaration, falling back to UTF-8.
 - The API sends `Content-Security-Policy: default-src 'none'`, `nosniff` and `no-store` headers. The web pages themselves do not have a CSP yet.
 - **Not production-safe yet.** Before a public launch: network egress controls, a shared rate limiter, monitoring, and a security review.
@@ -204,29 +256,47 @@ What does **not** work offline yet:
 
 Note: the browser's "online" signal only means "connected to a network". A request can still fail on a bad connection; the app then falls back to the stored copy when it has one.
 
-## Future Local AI Architecture
+## Local AI (Stage 7)
 
-The goal is AI help (summaries, related articles, questions) that **runs on the user's device**, so article content is not sent to a cloud service by default.
+| Question | Answer |
+| --- | --- |
+| Library | **Transformers.js** `@huggingface/transformers` 4.3.1 (runs ONNX models with ONNX Runtime Web). |
+| Model | **`Xenova/t5-small`** (Apache-2.0), task *summarization*. Small enough for mid-range phones; summaries are basic and can be wrong. Change it in `lib/ai/config.ts`. |
+| Download size | CPU / WebAssembly, 8-bit (`q8`): **about 80 MB**. WebGPU, 16-bit (`fp16`, only if the GPU supports `shader-f16`): **about 156 MB**. Plus the ONNX Runtime engine (14–27 MB) from this app. |
+| Where from | Public **Hugging Face Hub** (huggingface.co), **only after the user clicks** “Download & enable local AI”. |
+| Where cached | The browser's **Cache Storage** (`transformers-cache`) for this site. “Delete downloaded model” removes it. |
+| Browser features | Required: **Web Workers** and **WebAssembly**. Optional: **WebGPU** (`navigator.gpu`, a GPU adapter with `shader-f16`, and a secure context: HTTPS or localhost). |
+| When unavailable | The panel explains why. Nothing is downloaded; feeds, saving, offline reading and full articles all work as before. |
 
 ```
-page.tsx  ──postMessage──►  ai.worker.ts (Web Worker)
-   ▲                           │ loads a small model once (cached by the browser)
-   │                           │ runs inference with WebGPU (WASM fallback)
-   └──────────postMessage──────┘ returns summary / embeddings / answer
+page (main thread)                          workers/ai.worker.ts (Web Worker)
+──────────────────                          ─────────────────────────────────
+LocalAiProvider ─ load {model, device} ───► Transformers.js pipeline("summarization")
+   ▲   (only after the user clicks)            │  downloads model (huggingface.co) → Cache Storage
+   │◄──── load-progress / ready ───────────────┘  engine from /ort/ (our site)
+LocalSummary ── summarize {text} ─────────► generate (TextStreamer counts tokens)
+   ▲                                            │
+   │◄──── generate-progress / summary / error ─┘
+   └─ every message checked with Zod; summary checked by validateSummary(); shown as plain text
+Stop / Cancel → worker.terminate()  (immediate; the model must be loaded again, from the cache)
 ```
 
-1. **Web Worker.** All model work runs in a separate `ai.worker.ts` thread so the page never freezes.
-2. **WebGPU inference.** A browser runtime such as WebLLM or Transformers.js runs a small open model on the GPU, with a WASM/CPU fallback for devices without WebGPU.
-3. **Opt-in download.** The model (hundreds of MB) is downloaded only after the user clicks "Enable local AI", with the size shown first, then cached by the browser.
-4. **Local data only.** The worker reads saved articles from IndexedDB. Embeddings for "related articles" and "ask questions" are stored in a new Dexie table (for example `articleEmbeddings`).
-5. **No silent cloud fallback.** If the device cannot run the model, the feature stays off. Any cloud option would need a separate, explicit opt-in.
+How it stays safe and private:
+
+1. **Explicit action:** no worker is created and nothing is downloaded until the click.
+2. **Off the main thread:** all model work runs in the worker, so the page stays responsive.
+3. **Local only:** article text goes from the page to the worker and back. There are no AI API calls; tests check that `fetch` is never used with article text.
+4. **Validated output:** worker messages are checked with Zod. Summaries must be plain text of sensible length without repetition loops, markup is stripped, and the result is rendered as text, never HTML.
+5. **Clear failures:** unsupported browser, download failure, out of memory, WebGPU failure (with a *Use CPU mode* button), crash and timeout (2 minutes) each have their own message.
+
+Limitations: T5-small reads about 2,000 characters, so only the beginning of long articles is summarized (the UI says so). It works best with English. Stopping terminates the worker, so the model reloads from the cache next time. **The real model could not be downloaded in the development sandbox (huggingface.co blocked), so real inference has not been verified yet; please test on a real device.**
 
 ## Future GitHub issues
 
 1. **Add website-to-feed autodiscovery** — find the feed from a site URL via `<link rel="alternate">`, `/feed`, `/rss.xml`, `/atom.xml`.
 2. **Add secure production-grade SSRF protection** — resolve DNS, block private IPs after resolution, pin connections, add rate limiting.
-3. **Add article extraction with Readability and sanitization** — fetch the original page, extract with Mozilla Readability, sanitize with DOMPurify, fall back to the feed summary.
-4. **Add local WebGPU LLM inference through a Worker** — as described above.
+3. ~~Add article extraction with Readability and sanitization~~ — done in Stage 6.
+4. ~~Add local WebGPU inference through a Worker~~ — foundation done in Stage 7 (summaries).
 5. **Add private semantic search using local embeddings** — embeddings computed and stored in the browser.
 6. **Add anonymous opt-in feed discovery** — submit subscription lists anonymously, rank by popularity + co-subscription, never recommend already-followed feeds.
 7. **Add feed health monitoring** — show dead, slow or broken feeds without breaking the timeline.

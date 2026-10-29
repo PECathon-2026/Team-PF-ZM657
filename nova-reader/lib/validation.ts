@@ -161,3 +161,18 @@ export const feedApiResponseSchema = z.discriminatedUnion("success", [
     }),
   }),
 ]);
+
+// Schema for GET /api/article (Stage 6). `html` is untrusted; it is only checked to be a string.
+export const articlePageApiResponseSchema = z.discriminatedUnion("success", [
+  z.object({
+    success: z.literal(true),
+    page: z.object({ url: z.string(), html: z.string() }),
+  }),
+  z.object({
+    success: z.literal(false),
+    error: z.object({
+      code: z.enum(API_ERROR_CODES),
+      message: z.string(),
+    }),
+  }),
+]);

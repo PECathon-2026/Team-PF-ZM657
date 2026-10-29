@@ -10,9 +10,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "predev": "node scripts/copy-onnx-wasm.mjs",
+    "prebuild": "node scripts/copy-onnx-wasm.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.1",
+    "@mozilla/readability": "^0.6.0",
     "dexie": "^4.4.7",
     "dompurify": "^3.4.17",
     "fast-xml-parser": "^5.11.2",

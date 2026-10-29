@@ -1,16 +1,18 @@
-// Shows how many feeds have an offline copy, with a button to delete them.
+// Shows what is stored for offline reading, with a button to delete it.
 // Runs in the BROWSER. Offline copies live only in IndexedDB on this device.
-// Saved articles are separate and are NOT deleted by this button.
+// Saved articles (and their full text) are NOT deleted by this button.
 
 import { HardDrive } from "lucide-react";
 
 type OfflineCopiesProps = {
-  count: number;
+  count: number; // feed copies
+  articleCount: number; // stored full articles (Stage 6)
   onClear: () => void;
   isClearing: boolean;
 };
 
-export function OfflineCopies({ count, onClear, isClearing }: OfflineCopiesProps) {
+export function OfflineCopies({ count, articleCount, onClear, isClearing }: OfflineCopiesProps) {
+  const nothingStored = count === 0 && articleCount === 0;
   return (
     <section aria-labelledby="offline-copies-title" className="rounded-2xl border border-line bg-surface p-4">
       <h2 id="offline-copies-title" className="flex items-center gap-2 font-semibold text-ink">
@@ -22,7 +24,12 @@ export function OfflineCopies({ count, onClear, isClearing }: OfflineCopiesProps
           ? "No feeds are stored yet. The last feeds you load (up to 10) are kept here so you can read them offline."
           : `${count} ${count === 1 ? "feed is" : "feeds are"} stored on this device for offline reading.`}
       </p>
-      {count > 0 && (
+      {articleCount > 0 && (
+        <p className="mt-1 text-sm text-ink-muted">
+          {`${articleCount} full ${articleCount === 1 ? "article is" : "articles are"} stored for the reading view.`}
+        </p>
+      )}
+      {!nothingStored && (
         <button
           type="button"
           onClick={onClear}

@@ -40,3 +40,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ONNX Runtime engine files copied by scripts/copy-onnx-wasm.mjs
+/public/ort/
+
+# Files moved aside for manual deletion
+/_to_delete/

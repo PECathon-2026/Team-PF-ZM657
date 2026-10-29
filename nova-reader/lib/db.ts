@@ -4,20 +4,26 @@
 // Tables:
 //   savedArticles – articles the user pressed "Save" on (kept until removed)
 //   cachedFeeds   – offline copies of the last few feeds loaded (max 10)
+//   extractedArticles – readable full articles (Stage 6), max 50, but the
+//                       full text of SAVED articles is never deleted automatically
 //
 // To look at the data: open browser DevTools → Application → IndexedDB → nova-reader.
 
 import Dexie, { type EntityTable } from "dexie";
 import { z } from "zod";
-import type { CachedFeed, FeedInfo, FeedItem, ReadableArticle, SavedArticle } from "./feed-types";
+import type { CachedFeed, ExtractedArticle, FeedInfo, FeedItem, ReadableArticle, SavedArticle } from "./feed-types";
 import { feedInfoSchema, feedItemSchema } from "./validation";
 
 /** How many feeds keep an offline copy. Older copies are deleted first. */
 export const MAX_CACHED_FEEDS = 10;
 
+/** How many extracted full articles are kept (not counting saved articles). */
+export const MAX_EXTRACTED_ARTICLES = 50;
+
 class NovaDatabase extends Dexie {
   savedArticles!: EntityTable<SavedArticle, "id">;
   cachedFeeds!: EntityTable<CachedFeed, "requestedUrl">;
+  extractedArticles!: EntityTable<ExtractedArticle, "url">;
 
   constructor() {
     super("nova-reader");
@@ -30,6 +36,14 @@ class NovaDatabase extends Dexie {
     this.version(2).stores({
       savedArticles: "id, savedAt",
       cachedFeeds: "requestedUrl, cachedAt",
+    });
+    // Version 3 (Stage 6): readable full articles, keyed by article URL.
+    // savedArticles gets a "url" index so we can tell which full articles belong
+    // to saved articles (those are never removed automatically).
+    this.version(3).stores({
+      savedArticles: "id, savedAt, url",
+      cachedFeeds: "requestedUrl, cachedAt",
+      extractedArticles: "url, extractedAt",
     });
   }
 }
@@ -210,6 +224,15 @@ export async function getLatestCachedFeed(): Promise<CachedFeed | undefined> {
   return undefined;
 }
 
+/** All valid offline feed copies, newest first (read-only; used by the radar). */
+export async function listCachedFeeds(): Promise<CachedFeed[]> {
+  const records = await safely(
+    () => getDb().cachedFeeds.orderBy("cachedAt").reverse().toArray(),
+    "Could not read offline copies.",
+  );
+  return records.map(toValidCachedFeed).filter((feed): feed is CachedFeed => feed !== undefined);
+}
+
 /** Number of offline feed copies stored. */
 export function countCachedFeeds(): Promise<number> {
   return safely(() => getDb().cachedFeeds.count(), "Could not read offline copies.");
@@ -218,4 +241,81 @@ export function countCachedFeeds(): Promise<number> {
 /** Deletes every offline feed copy. Saved articles are NOT touched. */
 export function clearCachedFeeds(): Promise<void> {
   return safely(() => getDb().cachedFeeds.clear(), "Could not clear offline copies.");
+}
+
+// ---------------------------------------------------------------------------
+// Extracted full articles (Stage 6)
+// ---------------------------------------------------------------------------
+
+const extractedArticleSchema = z.object({
+  url: z.string(),
+  pageUrl: z.string(),
+  title: z.string().optional(),
+  byline: z.string().optional(),
+  siteName: z.string().optional(),
+  excerpt: z.string().optional(),
+  lang: z.string().optional(),
+  publishedTime: z.string().optional(),
+  contentHtml: z.string(),
+  textLength: z.number(),
+  extractedAt: z.string(),
+});
+
+/** The stored readable version of an article, or undefined (also for invalid records). */
+export async function getExtractedArticle(url: string): Promise<ExtractedArticle | undefined> {
+  const record = await safely(() => getDb().extractedArticles.get(url), "Could not read the stored article.");
+  const parsed = extractedArticleSchema.safeParse(record);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * Stores a readable article for offline reading. Keeps at most
+ * MAX_EXTRACTED_ARTICLES, deleting the oldest first — but never the full text
+ * of an article that is in savedArticles.
+ */
+export async function storeExtractedArticle(article: ExtractedArticle): Promise<void> {
+  await safely(async () => {
+    const db = getDb();
+    await db.transaction("rw", db.extractedArticles, db.savedArticles, async () => {
+      await db.extractedArticles.put(article);
+      const savedUrls = new Set((await db.savedArticles.orderBy("url").uniqueKeys()).map(String));
+      const removable = (await db.extractedArticles.orderBy("extractedAt").primaryKeys()).filter(
+        (url) => !savedUrls.has(String(url)),
+      );
+      const excess = removable.length - MAX_EXTRACTED_ARTICLES;
+      if (excess > 0) await db.extractedArticles.bulkDelete(removable.slice(0, excess));
+    });
+  }, "Could not keep this article for offline reading.");
+}
+
+/** Number of stored readable articles. */
+export function countExtractedArticles(): Promise<number> {
+  return safely(() => getDb().extractedArticles.count(), "Could not read stored articles.");
+}
+
+/**
+ * "Clear offline copies": deletes all feed copies and every stored full article
+ * that does NOT belong to a saved article. Saved articles are kept, with their full text.
+ */
+export async function clearOfflineCopies(): Promise<void> {
+  await safely(async () => {
+    const db = getDb();
+    await db.transaction("rw", db.cachedFeeds, db.extractedArticles, db.savedArticles, async () => {
+      await db.cachedFeeds.clear();
+      const savedUrls = (await db.savedArticles.orderBy("url").uniqueKeys()).map(String);
+      await db.extractedArticles.where("url").noneOf(savedUrls).delete();
+    });
+  }, "Could not clear offline copies.");
+}
+
+/** All valid stored full articles, newest first (read-only; used by the radar). */
+export async function listExtractedArticles(): Promise<ExtractedArticle[]> {
+  const records = await safely(
+    () => getDb().extractedArticles.orderBy("extractedAt").reverse().toArray(),
+    "Could not read stored articles.",
+  );
+  return records
+    .map((record) => extractedArticleSchema.safeParse(record))
+    .filter((parsed) => parsed.success)
+    .map((parsed) => parsed.data as ExtractedArticle);
 }

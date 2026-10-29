@@ -6,19 +6,26 @@ import Dexie from "dexie";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cacheFeed,
+  clearOfflineCopies,
+  countExtractedArticles,
+  getExtractedArticle,
+  MAX_EXTRACTED_ARTICLES,
+  storeExtractedArticle,
   clearCachedFeeds,
   closeDatabase,
   countCachedFeeds,
   getCachedFeed,
   getLatestCachedFeed,
   getSavedArticles,
+  listCachedFeeds,
+  listExtractedArticles,
   LocalStorageError,
   MAX_CACHED_FEEDS,
   removeSavedArticle,
   saveArticle,
   toLocalStorageError,
 } from "@/lib/db";
-import type { FeedInfo, FeedItem } from "@/lib/feed-types";
+import type { ExtractedArticle, FeedInfo, FeedItem } from "@/lib/feed-types";
 
 const ARTICLE = {
   id: "feed1-post1",
@@ -196,5 +203,87 @@ describe("storage errors", () => {
     await getSavedArticles();
     await getLatestCachedFeed();
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("extracted full articles (Stage 6)", () => {
+  const extracted = (url: string, extractedAt = "2026-10-01T00:00:00.000Z"): ExtractedArticle => ({
+    url,
+    pageUrl: url,
+    title: "Full article",
+    contentHtml: "<p>Full text</p>",
+    textLength: 900,
+    extractedAt,
+  });
+
+  it("stores and reads a full article, also after a refresh", async () => {
+    await storeExtractedArticle(extracted("https://blog.example/a"));
+    simulateRefresh();
+    expect(await getExtractedArticle("https://blog.example/a")).toMatchObject({ title: "Full article" });
+    expect(await getExtractedArticle("https://blog.example/missing")).toBeUndefined();
+  });
+
+  it(`keeps at most ${MAX_EXTRACTED_ARTICLES}, but never removes the full text of a saved article`, async () => {
+    await saveArticle({ ...ARTICLE, url: "https://blog.example/0" }, "Example Blog");
+    for (let i = 0; i < MAX_EXTRACTED_ARTICLES + 5; i++) {
+      const stamp = new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString();
+      await storeExtractedArticle(extracted(`https://blog.example/${i}`, stamp));
+    }
+    expect(await getExtractedArticle("https://blog.example/0")).toBeDefined(); // oldest, but saved
+    expect(await getExtractedArticle("https://blog.example/1")).toBeUndefined(); // oldest unsaved → removed
+    expect(await getExtractedArticle(`https://blog.example/${MAX_EXTRACTED_ARTICLES + 4}`)).toBeDefined();
+    expect(await countExtractedArticles()).toBe(MAX_EXTRACTED_ARTICLES + 1);
+  });
+
+  it("clearing offline copies keeps saved articles and their full text", async () => {
+    await saveArticle(ARTICLE, "Example Blog");
+    await storeExtractedArticle(extracted(ARTICLE.url));
+    await storeExtractedArticle(extracted("https://blog.example/not-saved"));
+    await cacheFeed("https://blog.example/rss", FEED, ITEMS);
+
+    await clearOfflineCopies();
+    expect(await countCachedFeeds()).toBe(0);
+    expect(await getExtractedArticle("https://blog.example/not-saved")).toBeUndefined();
+    expect(await getExtractedArticle(ARTICLE.url)).toBeDefined();
+    expect(await getSavedArticles()).toHaveLength(1);
+  });
+
+  it("ignores invalid stored full articles", async () => {
+    await storeExtractedArticle({ ...extracted("https://blog.example/bad"), contentHtml: 42 as unknown as string });
+    expect(await getExtractedArticle("https://blog.example/bad")).toBeUndefined();
+  });
+
+  it("upgrades a version 2 database (Stage 5) without losing data", async () => {
+    const v2 = new Dexie("nova-reader");
+    v2.version(2).stores({ savedArticles: "id, savedAt", cachedFeeds: "requestedUrl, cachedAt" });
+    await v2.table("savedArticles").put({ ...ARTICLE, savedAt: "2026-09-01T00:00:00.000Z", feedTitle: "Old" });
+    await v2.table("cachedFeeds").put({ requestedUrl: "https://blog.example/rss", feed: FEED, items: ITEMS, cachedAt: "2026-09-01T00:00:00.000Z" });
+    v2.close();
+
+    expect(await getSavedArticles()).toHaveLength(1);
+    expect(await getCachedFeed("https://blog.example/rss")).toBeDefined();
+    await storeExtractedArticle(extracted(ARTICLE.url)); // new table works after the upgrade
+    expect(await getExtractedArticle(ARTICLE.url)).toBeDefined();
+  });
+});
+
+describe("read-only lists for the radar (Stage 8)", () => {
+  it("lists all feed copies and full articles, newest first, skipping invalid records", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-01T00:00:00Z"));
+    await cacheFeed("https://a.example/feed", { ...FEED, title: "A" }, ITEMS);
+    vi.setSystemTime(new Date("2026-10-02T00:00:00Z"));
+    await cacheFeed("https://b.example/feed", { ...FEED, title: "B" }, ITEMS);
+    await storeExtractedArticle({ url: "https://a.example/1", pageUrl: "https://a.example/1", contentHtml: "<p>x</p>", textLength: 1, extractedAt: "2026-10-01T00:00:00.000Z" });
+    await storeExtractedArticle({ url: "https://a.example/2", pageUrl: "https://a.example/2", contentHtml: "<p>y</p>", textLength: 1, extractedAt: "2026-10-03T00:00:00.000Z" });
+    await storeExtractedArticle({ url: "https://bad.example", pageUrl: "x", contentHtml: 5 as unknown as string, textLength: 1, extractedAt: "2026-10-04T00:00:00.000Z" });
+
+    expect((await listCachedFeeds()).map((f) => f.feed.title)).toEqual(["B", "A"]);
+    expect((await listExtractedArticles()).map((a) => a.url)).toEqual(["https://a.example/2", "https://a.example/1"]);
+  });
+
+  it("returns empty lists for an empty database", async () => {
+    expect(await listCachedFeeds()).toEqual([]);
+    expect(await listExtractedArticles()).toEqual([]);
   });
 });

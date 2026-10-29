@@ -73,6 +73,36 @@ export type FeedApiFailure = {
 
 export type FeedApiResponse = FeedApiSuccess | FeedApiFailure;
 
+/**
+ * Shape of a successful GET /api/article response (Stage 6).
+ * `html` is the RAW, UNTRUSTED page. The browser extracts the article with
+ * Readability and sanitizes it with DOMPurify before anything is shown.
+ */
+export type ArticlePageApiSuccess = {
+  success: true;
+  page: {
+    url: string; // final URL after redirects; relative links are resolved against it
+    html: string;
+  };
+};
+
+export type ArticlePageApiResponse = ArticlePageApiSuccess | FeedApiFailure;
+
+/** A readable article extracted in the browser (Stage 6). `contentHtml` is UNSANITIZED. */
+export type ExtractedArticle = {
+  url: string; // the article URL from the feed (the lookup key)
+  pageUrl: string; // final page URL, base for relative links
+  title?: string;
+  byline?: string;
+  siteName?: string;
+  excerpt?: string;
+  lang?: string;
+  publishedTime?: string;
+  contentHtml: string; // Readability output; sanitized every time it is displayed
+  textLength: number;
+  extractedAt: string; // ISO date
+};
+
 /** An article the user saved. Stored only in the browser (IndexedDB). */
 export type SavedArticle = {
   id: string;

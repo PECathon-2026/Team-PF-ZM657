@@ -16,6 +16,9 @@ const ALLOWED_TAGS = [
   "a", "p", "br", "hr", "strong", "b", "em", "i", "u", "s", "small", "sub", "sup",
   "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "code",
   "ul", "ol", "li", "dl", "dt", "dd", "figure", "figcaption", "span", "div",
+  // Stage 6: tables and a few semantic tags that extracted articles often use.
+  "table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td",
+  "section", "article", "header", "footer", "aside", "mark", "abbr", "cite", "q", "time", "kbd", "samp", "var",
 ];
 const ALLOWED_ATTR = ["href", "title"];
 

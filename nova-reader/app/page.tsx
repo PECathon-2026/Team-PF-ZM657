@@ -8,10 +8,12 @@
 //   Every loaded feed → lib/db.ts cacheFeed() → shown again when offline / on next visit
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
-import { Rss, ShieldCheck } from "lucide-react";
-import { AIWorkspacePlaceholder } from "@/components/AIWorkspacePlaceholder";
+import Link from "next/link";
+import { Radar as RadarIcon, Rss, ShieldCheck } from "lucide-react";
+import { AIWorkspace } from "@/components/AIWorkspace";
 import { EmptyState } from "@/components/EmptyState";
 import { FeedForm } from "@/components/FeedForm";
+import { LocalAiProvider } from "@/components/LocalAiProvider";
 import { FeedList, FeedListSkeleton, formatDateTime } from "@/components/FeedList";
 import { OfflineCopies } from "@/components/OfflineCopies";
 import { OfflineIndicator } from "@/components/OfflineIndicator";
@@ -20,8 +22,9 @@ import { SavedArticles } from "@/components/SavedArticles";
 import { StatusMessage, type StatusKind } from "@/components/StatusMessage";
 import {
   cacheFeed,
-  clearCachedFeeds,
+  clearOfflineCopies as clearOfflineCopiesInDb,
   countCachedFeeds,
+  countExtractedArticles,
   getCachedFeed,
   getLatestCachedFeed,
   getSavedArticles,
@@ -49,6 +52,7 @@ export default function HomePage() {
 
   // Offline feed copies in IndexedDB.
   const [cachedCount, setCachedCount] = useState(0);
+  const [storedArticleCount, setStoredArticleCount] = useState(0);
   const [isClearingCache, setIsClearingCache] = useState(false);
 
   // The article open in the reading view (null = closed).
@@ -73,6 +77,7 @@ export default function HomePage() {
       .finally(() => setIsLoadingSaved(false));
     // Storage problems here are already reported by the saved-articles section.
     countCachedFeeds().then(setCachedCount).catch(() => {});
+    countExtractedArticles().then(setStoredArticleCount).catch(() => {});
     getLatestCachedFeed().then(onLatestCachedFeed).catch(() => {});
   }, []);
 
@@ -144,11 +149,18 @@ export default function HomePage() {
     setStatus({ kind: "error", message: result.message, retryUrl: result.retryable ? url : undefined });
   }
 
+  /** Closing the reader may have stored a new full article, so refresh the count. */
+  function closeReader() {
+    setReadingArticle(null);
+    countExtractedArticles().then(setStoredArticleCount).catch(() => {});
+  }
+
   async function clearOfflineCopies() {
     setIsClearingCache(true);
     try {
-      await clearCachedFeeds();
+      await clearOfflineCopiesInDb();
       setCachedCount(0);
+      setStoredArticleCount(await countExtractedArticles()); // full text of saved articles is kept
       // A copy already on screen stays visible, but is no longer stored.
       setStatus({ kind: "success", message: "Offline copies were deleted from this device. Saved articles were kept." });
     } catch (error) {
@@ -178,7 +190,7 @@ export default function HomePage() {
   const retryUrl = isLoadingFeed ? undefined : status?.retryUrl;
 
   return (
-    <>
+    <LocalAiProvider>
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-10 focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2"
@@ -197,7 +209,16 @@ export default function HomePage() {
             </h1>
             <p className="mt-0.5 text-sm text-ink-muted">A private, offline-friendly reader for independent blogs.</p>
           </div>
-          <OfflineIndicator />
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href="/radar"
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-line px-3 text-sm font-medium text-ink hover:border-accent hover:text-accent"
+            >
+              <RadarIcon aria-hidden="true" className="size-4" />
+              Knowledge Radar
+            </Link>
+            <OfflineIndicator />
+          </div>
         </div>
       </header>
 
@@ -243,8 +264,13 @@ export default function HomePage() {
             onRemove={toggleSave}
             onRead={setReadingArticle}
           />
-          <OfflineCopies count={cachedCount} onClear={clearOfflineCopies} isClearing={isClearingCache} />
-          <AIWorkspacePlaceholder />
+          <OfflineCopies
+            count={cachedCount}
+            articleCount={storedArticleCount}
+            onClear={clearOfflineCopies}
+            isClearing={isClearingCache}
+          />
+          <AIWorkspace />
         </aside>
       </main>
 
@@ -256,7 +282,7 @@ export default function HomePage() {
         </p>
       </footer>
 
-      <ReaderView article={readingArticle} onClose={() => setReadingArticle(null)} />
-    </>
+      <ReaderView article={readingArticle} onClose={closeReader} />
+    </LocalAiProvider>
   );
 }
