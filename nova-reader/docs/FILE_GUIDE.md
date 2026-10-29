@@ -1,0 +1,134 @@
+# File guide (for beginners)
+
+This page explains every file we wrote: what it is for, **where it runs**, and its important functions.
+
+- **Server** means it runs in Node.js on the machine hosting the app (your laptop during `npm run dev`, Vercel after deployment).
+- **Browser** means it runs on the user's device.
+- **Both** means it is plain TypeScript with no server-only or browser-only code.
+
+---
+
+## app/
+
+### `app/api/feed/route.ts` — Server
+
+The only API endpoint: `GET /api/feed?url=<encoded-feed-url>`. Browsers usually cannot download a blog's feed directly (CORS), so the browser asks our server to do it.
+
+| Function | What it does, in plain words |
+| --- | --- |
+| `GET(request)` | Reads `?url=`, validates it, downloads the feed, parses it, and returns `{ success: true, feed, items }`. Any error becomes `{ success: false, error: { code, message } }`. |
+| `downloadFeed(url)` | Downloads the feed. Follows at most 3 redirects **by hand** so each new address is validated (stops `https://evil.example` → `http://localhost`). |
+| `fetchOnce(url)` | One request with a 10-second timeout. Connection problems become `FETCH_FAILED`. |
+| `readLimitedText(response)` | Reads the body piece by piece and stops when it passes 2 MB. |
+| `errorResponse(error)` / `describeError(error)` | Turns any error into a safe JSON message and HTTP status. Stack traces are never sent to the browser. |
+
+Why `rawUrl` is read outside `try`: reading `request.url` tells Next.js "this route is dynamic". Next.js signals that with an internal error during the build, and our `catch` must not swallow it.
+
+### `app/layout.tsx` — Server
+
+The HTML shell (`<html>`, `<body>`) and page title. Uses system fonts, so no font is downloaded from Google (faster and more private).
+
+### `app/page.tsx` — Browser (`"use client"`)
+
+The main page. It holds the app's **state** and connects all components.
+
+| Function / state | What it does |
+| --- | --- |
+| `feed`, `status`, `isLoadingFeed` | The loaded feed and the loading/success/error message. |
+| `saved`, `savedError` | Saved articles from IndexedDB. |
+| `useEffect(...)` | Loads saved articles once when the page opens. |
+| `loadFeed(url)` | Refuses when offline; otherwise calls `/api/feed`, checks the JSON with Zod, and shows the feed or an error. |
+| `toggleSave(article)` | Saves or removes an article in IndexedDB and updates the list. |
+
+### `app/globals.css` — Browser
+
+Imports Tailwind and defines colour tokens (`--accent`, `--ink`, …) for light and dark mode, a strong keyboard focus ring, and reduced-motion support.
+
+---
+
+## components/ — all Browser
+
+| File | Purpose |
+| --- | --- |
+| `FeedForm.tsx` | The URL input. `submit()` validates with `validateFeedUrl()` and shows the error under the input (linked with `aria-describedby`). The button is disabled while loading. Has three example feeds. |
+| `FeedList.tsx` | Feed title, description, article count, website link, and the list of `ArticleCard`s. Shows an empty state if the feed has no articles. |
+| `ArticleCard.tsx` | One article: title, `<time>` date, author, 3-line summary, **Read**, **Save** (`aria-pressed` shows its state) and **Original** link (`rel="noopener noreferrer"`). The `compact` variant is used in the sidebar. |
+| `ReaderView.tsx` | The reading view, built on the native `<dialog>`: focus moves into it and **Escape** closes it. Shows the feed's text with paragraph breaks. |
+| `SavedArticles.tsx` | The "Saved on this device" section: loading, error, empty and list states. |
+| `OfflineIndicator.tsx` | Badge showing "Online" or "Offline: saved articles only". `role="status"` makes screen readers announce changes. |
+| `AIWorkspacePlaceholder.tsx` | Three inactive cards for future local AI. Makes **no** network calls. |
+| `EmptyState.tsx` | A friendly "nothing here yet" box with an icon. |
+| `StatusMessage.tsx` | A coloured message. Errors use `role="alert"` (announced immediately); others use `role="status"`. |
+
+**Safety rule used everywhere:** feed content is rendered as text with `{value}` in JSX. React escapes it, so it can never run as code. We never use `dangerouslySetInnerHTML`.
+
+---
+
+## lib/
+
+### `lib/feed-types.ts` — Both
+
+Only types and constants: `FeedItem`, `Feed`, `FeedInfo`, `SavedArticle`, `ReadableArticle`, the API response types, the list of error codes, and `MAX_FEED_ITEMS = 50`.
+
+### `lib/feed-parser.ts` — Both (currently called by the server)
+
+| Function | What it does |
+| --- | --- |
+| `parseFeed(xml, feedUrl)` | Main function. Validates the XML, detects RSS 2.0, RSS 1.0 or Atom, and returns a `Feed`. Throws `FeedParseError` (`INVALID_XML` or `UNSUPPORTED_FORMAT`) for bad input. |
+| `parseRss` / `parseRssItem` | Reads `<channel>` and `<item>`: title, link (or guid), `content:encoded` or description, `dc:creator`, `pubDate`, and an image from `enclosure` / `media:*`. |
+| `parseAtom` / `parseAtomEntry` | Reads `<feed>` and `<entry>`: `link rel="alternate"`, content or summary, `author/name` (falls back to the feed author), `published` or `updated`. |
+| `finalizeItems(items)` | Removes duplicate URLs and IDs, sorts newest first, and keeps 50. |
+| `makeId(feedUrl, key)` | Stable ID = hash(feed URL) + hash(guid or link). The same article always gets the same ID, which is how "Saved" buttons stay correct. |
+| `text`, `attr`, `asArray`, `asNode` | Small, safe helpers for reading the unknown-shaped XML tree without using `any`. |
+
+Items without a valid http(s) link are skipped, because there is nothing to open.
+
+### `lib/validation.ts` — Both
+
+| Function / value | What it does |
+| --- | --- |
+| `validateFeedUrl(input)` | Returns `{ ok: true, url }` or `{ ok: false, code, message }`. Checks: non-empty, max 2048 characters, a real URL, http(s) only, no `user:pass@`, not a blocked host. Never throws. |
+| `isBlockedHostname(host)` | Blocks `localhost`, `*.local`, `*.internal`, private/loopback/link-local IPv4 and IPv6. Text check only (see README security limitations). |
+| `feedApiResponseSchema` | Zod schema the browser uses to check the API's JSON before trusting it. |
+
+### `lib/db.ts` — Browser
+
+Dexie database named `nova-reader` with one table, `savedArticles` (primary key `id`, index `savedAt`).
+
+| Function | What it does |
+| --- | --- |
+| `getSavedArticles()` | All saved articles, newest saved first. |
+| `saveArticle(article, feedTitle)` | Stores an article with `savedAt = now`. Saving twice just updates it. |
+| `removeSavedArticle(id)` | Deletes one article. |
+| `safely(...)` | Wraps every call so failures (for example private browsing) become a friendly `LocalStorageError`. |
+
+### `lib/use-online-status.ts` — Browser
+
+`useOnlineStatus()` is a React hook that returns `true`/`false` and re-renders when the browser fires `online`/`offline` events (`useSyncExternalStore`).
+
+### `lib/utils.ts` — Both
+
+`hashString`, `decodeHtmlEntities`, `htmlToText` (removes scripts, styles and tags, keeps paragraphs), `truncate`, `toIsoDate` (invalid dates → `undefined`), `toSafeHttpUrl` (resolves relative links and rejects `javascript:` etc.), `formatDate`.
+
+---
+
+## tests/
+
+| File | What it covers |
+| --- | --- |
+| `feed-parser.test.ts` | Valid RSS, valid Atom, empty feed, missing title, missing description, duplicate links, invalid XML, empty input, non-feed XML, invalid dates, relative URLs (two cases), `javascript:` links, more than 50 items, stable IDs, content preference. |
+| `validation.test.ts` | Good URLs, trimming, empty/non-string input, malformed URLs, long URLs, bad protocols, credentials, localhost and private IPs, response schema. |
+| `feed-route.test.ts` | The API route with a fake `fetch`: success, missing URL, localhost (no request made), redirect to a private IP, HTTP 404, invalid XML, >2 MB, timeout, network failure without leaking details. |
+
+## Config files
+
+| File | Purpose |
+| --- | --- |
+| `package.json` | Dependencies and scripts (`dev`, `build`, `start`, `lint`, `typecheck`, `test`, `test:watch`). |
+| `vitest.config.mts` | Test settings; makes `@/` imports work in tests. |
+| `tsconfig.json` | TypeScript settings (`strict: true`). |
+| `eslint.config.mjs` | Lint rules from Next.js (includes accessibility rules). |
+| `next.config.ts` | Next.js settings generated by `create-next-app`. |
+| `.env.example` | Documents that no environment variables are needed. |
+| `.gitignore` | Keeps `node_modules`, builds and `.env*` files out of git (except `.env.example`). |
+| `AGENTS.md` | Generated by Next.js for AI coding assistants. Safe to keep. |
