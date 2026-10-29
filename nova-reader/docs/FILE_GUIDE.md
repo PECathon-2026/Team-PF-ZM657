@@ -12,17 +12,7 @@ This page explains every file we wrote: what it is for, **where it runs**, and i
 
 ### `app/api/feed/route.ts` — Server
 
-The only API endpoint: `GET /api/feed?url=<encoded-feed-url>`. Browsers usually cannot download a blog's feed directly (CORS), so the browser asks our server to do it.
-
-| Function | What it does, in plain words |
-| --- | --- |
-| `GET(request)` | Reads `?url=`, validates it, downloads the feed, parses it, and returns `{ success: true, feed, items }`. Any error becomes `{ success: false, error: { code, message } }`. |
-| `downloadFeed(url)` | Downloads the feed. Follows at most 3 redirects **by hand** so each new address is validated (stops `https://evil.example` → `http://localhost`). |
-| `fetchOnce(url)` | One request with a 10-second timeout. Connection problems become `FETCH_FAILED`. |
-| `readLimitedText(response)` | Reads the body piece by piece and stops when it passes 2 MB. |
-| `errorResponse(error)` / `describeError(error)` | Turns any error into a safe JSON message and HTTP status. Stack traces are never sent to the browser. |
-
-Why `rawUrl` is read outside `try`: reading `request.url` tells Next.js "this route is dynamic". Next.js signals that with an internal error during the build, and our `catch` must not swallow it.
+The only API endpoint: `GET /api/feed?url=<encoded-feed-url>`. It is three lines: it calls `handleFeedRequest()` from `lib/server/feed-handler.ts`. (Next.js route files may only export HTTP handlers, and keeping the logic in `lib/server/` lets tests pass a fake DNS and network.) There is no `export const runtime`: with Cache Components, Next.js always uses Node.js and forbids that export.
 
 ### `app/layout.tsx` — Server
 
@@ -114,6 +104,23 @@ Dexie database named `nova-reader` with one table, `savedArticles` (primary key 
 | `sanitizeArticleHtml(html, baseUrl)` | Runs DOMPurify with a short allow-list of reading tags (`p`, `a`, `em`, lists, headings…) and only the `href`/`title` attributes. Returns a `DocumentFragment`. |
 | `secureLink(link, baseUrl)` | Resolves the link against the article URL. Keeps it only if it is http(s), otherwise removes `href` (the text stays). Adds `target="_blank"` and `rel="noopener noreferrer nofollow ugc"`. |
 
+### `lib/server/` — Server only
+
+Every file starts with `import "server-only"`, so Next.js fails the build if browser code imports it.
+
+| File | Function | What it does, in plain words |
+| --- | --- | --- |
+| `feed-handler.ts` | `handleFeedRequest(request, deps?)` | Rate limit → Stage 2 `validateFeedUrl()` → `fetchFeedXml()` → `parseFeedXml()` → JSON. Any error becomes `{ success: false, error: { code, message } }` with a safe message. Unknown errors are logged on the server and the browser only sees "Something went wrong". Adds `no-store`, `nosniff` and CSP headers. |
+| `feed-fetcher.ts` | `fetchFeedXml(url, options?)` | One 10-second deadline for everything. For every hop: `assertSafeDestination()`, then one request. Redirects (max 3) are followed by hand. Checks the status (2xx only), the content type (XML types; `text/plain` only if the body is XML) and decodes the charset. |
+| | `assertFeedContentType`, `decodeBody` | Content-type rule and charset detection (header → byte-order mark → `<?xml encoding>` → UTF-8). |
+| `http-client.ts` | `httpGetOnce(url, options)` | One GET with `node:http(s)`. Uses our `lookup` (pinned DNS), a fresh connection (`agent: false`), the shared abort signal, and stops reading after 2 MB **after** decompression (gzip/deflate/brotli), which stops "gzip bombs". |
+| `ssrf.ts` | `isPublicIpAddress(ip)` | True only for public IPv4 and global IPv6. Blocks loopback, private, link-local/metadata, CGNAT, multicast, reserved, documentation, IPv4-mapped, NAT64, 6to4, Teredo… |
+| | `resolvePublicAddresses(host, resolver)` | Resolves A + AAAA. Refuses if **any** address is not public. DNS errors become a generic message. |
+| | `createPinnedLookup(resolver)` | The DNS function Node uses **while connecting**. It validates and returns only the checked addresses, so DNS rebinding cannot swap in a private IP. |
+| | `assertSafeDestination(url)` | Stage 2 checks + allowed ports (80, 443, 8080, 8443) + literal-IP check. Used for the first URL and every redirect. |
+| `rate-limit.ts` | `RateLimiter`, `InMemoryRateLimiter`, `getClientKey` | Interface + MVP in-memory limiter (30/min per client, memory-capped). Client key = salted hash of the IP, never the raw IP. Replace with a shared store for production. |
+| `errors.ts` | `FeedRouteError` | Error with `code`, HTTP `status` and a message that is safe to show. |
+
 ### `lib/use-online-status.ts` — Browser
 
 `useOnlineStatus()` is a React hook that returns `true`/`false` and re-renders when the browser fires `online`/`offline` events (`useSyncExternalStore`).
@@ -141,14 +148,16 @@ Dexie database named `nova-reader` with one table, `savedArticles` (primary key 
 | `feed-parser.test.ts` | Valid RSS, valid Atom, empty feed, missing title, missing description, duplicate links, invalid XML, empty input, non-feed XML, invalid dates, relative URLs (two cases), `javascript:` links, more than 50 items, stable IDs, content preference. |
 | `sanitize-html.test.ts` | Runs in jsdom. Absolute link (NASA case), relative links, text without links, unsafe schemes (`javascript:`, `data:`, `vbscript:`…), dangerous markup (scripts, event handlers, iframes, forms, SVG, styles), no remote images. |
 | `validation.test.ts` | Good URLs, trimming, empty/non-string input, malformed URLs, long URLs, bad protocols, credentials, localhost and private IPs, response schema. |
-| `feed-route.test.ts` | The API route with a fake `fetch`: success, missing URL, localhost (no request made), redirect to a private IP, HTTP 404, invalid XML, >2 MB, timeout, network failure without leaking details. |
+| `feed-route.test.ts` | The API with fake DNS + network (real SSRF checks): success + schema, headers, safe redirects, missing/invalid URL, protocols, credentials, localhost, loopback, private IPs, metadata, unsafe IPv6, bad ports, hostnames resolving to private/mixed addresses, unsafe redirects, upstream errors, connection failures, timeout, oversized response, too many redirects, content types, malformed XML, non-feed XML, charsets, no leaked stack traces, rate limiting. |
+| `ssrf.test.ts` | IP policy (IPv4 + IPv6 special ranges), DNS validation, pinned lookup in both Node modes, DNS-rebinding simulation, port policy. |
+| `http-client.test.ts` | Real local HTTP server: body/headers, gzip, redirects not followed, Content-Length limit, streaming limit, gzip bomb, timeout, unknown encoding, refused connection, and proof that the real pinned lookup never lets a request reach 127.0.0.1. |
 
 ## Config files
 
 | File | Purpose |
 | --- | --- |
-| `package.json` | Dependencies and scripts (`dev`, `build`, `start`, `lint`, `typecheck`, `test`, `test:watch`). |
-| `vitest.config.mts` | Test settings; makes `@/` imports work in tests. |
+| `package.json` | Dependencies and scripts (`dev`, `build`, `start`, `lint`, `typecheck`, `test`, `test:run`, `test:watch`). |
+| `vitest.config.mts` | Test settings; makes `@/` imports work in tests and maps `server-only` to its empty file (it would throw outside Next.js). |
 | `tsconfig.json` | TypeScript settings (`strict: true`). |
 | `eslint.config.mjs` | Lint rules from Next.js (includes accessibility rules). |
 | `next.config.ts` | Next.js settings generated by `create-next-app`. |

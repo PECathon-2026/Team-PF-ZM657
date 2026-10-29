@@ -12,7 +12,7 @@ NOVA Reader is a small, privacy-first and offline-friendly reader for RSS and At
 
 - Load any public RSS 2.0, RSS 1.0 or Atom feed by URL.
 - URL validation in the browser **and** on the server (http/https only, no localhost or private-network addresses).
-- Server route `GET /api/feed` with a 10-second timeout, 2 MB size limit, safe redirect handling and clear error codes.
+- Server route `GET /api/feed` with SSRF protection (resolved A/AAAA records validated, connections pinned to the validated IPs, every redirect re-checked, web ports only), a 10-second overall timeout, a 2 MB limit (also after decompression), content-type and status checks, charset detection, an in-memory rate-limit placeholder and safe error codes.
 - Parser that normalizes RSS and Atom into one simple format: dates as ISO strings, relative links resolved, duplicates removed, stable IDs, at most 50 articles.
 - Article list with title, date, author, summary and a link to the original.
 - Reading view (accessible dialog) showing the feed's content with **working, clearly styled links**. Feed HTML is sanitized with DOMPurify in the browser, relative links are resolved against the article URL, and only http(s) links are kept.
@@ -46,7 +46,7 @@ See [Future GitHub issues](#future-github-issues) below. In short: multiple subs
 ```
 nova-reader/
 ├── app/
-│   ├── api/feed/route.ts     # SERVER: downloads + parses a feed, returns JSON
+│   ├── api/feed/route.ts     # SERVER: thin route, calls lib/server/feed-handler.ts
 │   ├── layout.tsx            # SERVER: HTML shell, page title
 │   ├── page.tsx              # BROWSER: main page, connects everything
 │   └── globals.css           # colours, focus styles, Tailwind import
@@ -68,7 +68,14 @@ nova-reader/
 │   ├── db.ts                 # BROWSER: IndexedDB via Dexie
 │   ├── sanitize-html.ts      # BROWSER: DOMPurify + safe links
 │   ├── use-online-status.ts  # BROWSER: online/offline React hook
-│   └── utils.ts              # small helpers (hash, html→text, dates)
+│   ├── utils.ts              # small helpers (hash, html→text, dates)
+│   └── server/               # SERVER ONLY (import "server-only")
+│       ├── feed-handler.ts   # the /api/feed logic: rate limit → validate → fetch → parse
+│       ├── feed-fetcher.ts   # redirects, status, content type, charset
+│       ├── http-client.ts    # one GET with pinned DNS, timeout, size limit, decompression
+│       ├── ssrf.ts           # IP policy, DNS validation, pinned lookup, port policy
+│       ├── rate-limit.ts     # RateLimiter interface + in-memory MVP placeholder
+│       └── errors.ts         # safe, user-facing error type
 ├── tests/                    # Vitest tests
 ├── docs/                     # screenshot + file-by-file guide
 ├── .env.example              # no variables needed yet
@@ -104,10 +111,11 @@ Open http://localhost:3000. No environment variables are required. `.env.example
 
 ```bash
 npm test             # run all tests once
+npm run test:run     # same, explicit name
 npm run test:watch   # re-run tests when files change
 ```
 
-Tests never use the real internet: the API route tests replace `fetch` with a fake.
+Tests never use the real internet. Route tests use a fake DNS resolver and a fake network that still runs the real SSRF checks; `tests/http-client.test.ts` uses a real local HTTP server for timeouts, size limits and gzip bombs.
 
 ## Architecture
 
@@ -153,12 +161,23 @@ flowchart LR
 
 Please read this before deploying publicly.
 
-- **SSRF protection is basic.** The app blocks `localhost`, `.local`/`.internal` names and private IP addresses *written in the URL*, and checks every redirect. It does **not** resolve DNS first, so a public domain that points at a private IP (or DNS rebinding) is not blocked. **Production SSRF hardening is still needed** (resolve DNS, check every resolved IP, pin the connection to it).
-- **No rate limiting yet.** Anyone could use the route to make many requests. **Rate limiting must be added** before a public launch.
+- **SSRF protection is an MVP foundation, not a guarantee.** What is implemented (`lib/server/ssrf.ts`):
+  - Only `http:`/`https:`, no credentials, ports 80/443/8080/8443 only.
+  - Hostnames are resolved (A **and** AAAA via the OS resolver). The request is refused if **any** address is loopback, private, link-local, cloud-metadata, carrier-grade NAT, multicast, reserved, documentation, IPv4-mapped/NAT64/6to4/Teredo IPv6, or otherwise not public.
+  - The validated addresses are handed to Node's HTTP client as its DNS `lookup`, so the connection goes to exactly the address that was checked (this defeats classic DNS rebinding / TOCTOU between check and connect).
+  - Redirects are followed manually (max 3); every target gets the full check again.
+- **SSRF limits that code alone cannot solve here:**
+  - **No network-level egress control.** The real fix is a firewall/egress proxy that only allows public internet. Serverless hosts (e.g. Vercel) do not let this app configure that; on a VPS or container, add firewall rules that block private ranges and `169.254.169.254`.
+  - **HTTP proxies.** If the server is configured to use an outbound proxy (`HTTP_PROXY`), the proxy resolves DNS itself and our pinning does not apply. The app does not use a proxy by default; do not add one without the same checks in the proxy.
+  - **IPv6/IPv4 translation on the host network** (e.g. NAT64 gateways or unusual routing) can make a "public" address reach something internal. Only network controls can rule this out.
+  - **The resolver is trusted.** We rely on the OS resolver's answer; a compromised resolver is out of scope.
+  - **Public targets can still be abused.** The route can be used to make requests to any public website (e.g. to hide the caller's IP). Rate limiting reduces, but does not remove, this.
+- **Rate limiting is an in-memory placeholder.** 30 requests/minute per client, keyed by a salted hash of the IP (raw IPs are never stored). It works per server instance only and resets on restart; on serverless hosting each instance has its own counter. Client IPs come from `x-forwarded-for`, which is only trustworthy behind a platform that sets it (Vercel does); elsewhere clients can fake it. **Use a shared store (e.g. Redis/Upstash) or a platform firewall in production** by implementing the `RateLimiter` interface.
 - **Feeds are untrusted.** Feed HTML is sanitized with DOMPurify (short tag allow-list, no scripts, styles, event handlers, iframes, forms or images) and only http(s) links are kept, but the app **does not guarantee that every feed is safe or valid**. Links open other websites, which may be unsafe.
 - **Links only come from the feed.** If a feed provides only a plain-text summary, links that exist only on the original web page are not shown; the reader view says so. Full-page extraction (Readability) is a planned issue.
-- Responses are decoded as UTF-8 only; feeds in other encodings may show wrong characters.
-- No Content-Security-Policy header is configured yet.
+- Feed text is decoded using the Content-Type charset, a byte-order mark or the XML declaration, falling back to UTF-8.
+- The API sends `Content-Security-Policy: default-src 'none'`, `nosniff` and `no-store` headers. The web pages themselves do not have a CSP yet.
+- **Not production-safe yet.** Before a public launch: network egress controls, a shared rate limiter, monitoring, and a security review.
 
 ## Offline behavior
 
