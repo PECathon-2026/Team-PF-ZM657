@@ -38,6 +38,7 @@ import { translateText } from "@/lib/translate-client";
 import { useArticleExtraction } from "@/lib/use-article-extraction";
 import { formatDate } from "@/lib/utils";
 import { ArticleContent } from "./ArticleContent";
+import { ArticleProvenanceLine } from "./BlockchainCompliance";
 import { FontSizeControl } from "./FontSizeProvider";
 import { useLanguagePreferences } from "./LanguagePreferences";
 import { LocalSummary } from "./LocalSummary";
@@ -428,6 +429,7 @@ function ReaderBody({
             {extracted?.siteName && <span>· {extracted.siteName}</span>}
             {detectedLang && <span>· {getLanguageName(detectedLang)}</span>}
           </p>
+          <ArticleProvenanceLine article={article} />
 
           {/* Language translation banner when article is not in user's preferred language(s), plus on-demand selector */}
           <div
