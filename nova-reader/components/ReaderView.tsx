@@ -19,20 +19,36 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { BookOpen, ExternalLink, FileText, GripHorizontal, GripVertical, Languages, LoaderCircle, Maximize2, Minimize2, X } from "lucide-react";
+import {
+  BookA,
+  BookOpen,
+  ExternalLink,
+  FileText,
+  GripHorizontal,
+  GripVertical,
+  Languages,
+  LoaderCircle,
+  Maximize2,
+  Minimize2,
+  X,
+} from "lucide-react";
 import type { ReadableArticle } from "@/lib/feed-types";
 import { detectContentLanguage, getLanguageName, needsTranslation, SUPPORTED_LANGUAGES } from "@/lib/languages";
 import { translateText } from "@/lib/translate-client";
 import { useArticleExtraction } from "@/lib/use-article-extraction";
 import { formatDate } from "@/lib/utils";
 import { ArticleContent } from "./ArticleContent";
+import { FontSizeControl } from "./FontSizeProvider";
 import { useLanguagePreferences } from "./LanguagePreferences";
 import { LocalSummary } from "./LocalSummary";
+import { ArticleNotesPad } from "./NotesWorkspace";
 import { StatusMessage } from "./StatusMessage";
+import { WordAssistantBox } from "./WordAssistant";
 
 type ReaderViewProps = {
   article: ReadableArticle | null;
   onClose: () => void;
+  onNotesChanged?: () => void;
 };
 
 const WIDTH_STORAGE_KEY = "nova-reader-width-px";
@@ -64,7 +80,7 @@ function readStoredWidthSnapshot(): number {
 
 const noopSubscribe = () => () => {};
 
-export function ReaderView({ article, onClose }: ReaderViewProps) {
+export function ReaderView({ article, onClose, onNotesChanged }: ReaderViewProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const storedInitialWidth = useSyncExternalStore(noopSubscribe, readStoredWidthSnapshot, () => DEFAULT_WIDTH_PX);
   const [customWidthPx, setCustomWidthPx] = useState<number | null>(null);
@@ -249,6 +265,7 @@ export function ReaderView({ article, onClose }: ReaderViewProps) {
             article={article}
             isWide={widthPx > DEFAULT_WIDTH_PX + 100}
             onTogglePresetWidth={togglePresetWidth}
+            onNotesChanged={onNotesChanged}
             onRequestClose={() => dialogRef.current?.close()}
           />
         </div>
@@ -261,15 +278,22 @@ function ReaderBody({
   article,
   isWide,
   onTogglePresetWidth,
+  onNotesChanged,
   onRequestClose,
 }: {
   article: ReadableArticle;
   isWide: boolean;
   onTogglePresetWidth: () => void;
+  onNotesChanged?: () => void;
   onRequestClose: () => void;
 }) {
   const { state, retry } = useArticleExtraction(article.url);
   const [preferFeedText, setPreferFeedText] = useState(false);
+  const [wordToolOpen, setWordToolOpen] = useState(false);
+  const [selectedWordInfo, setSelectedWordInfo] = useState<{ word: string; sentence?: string; auto: boolean }>({
+    word: "",
+    auto: false,
+  });
 
   const { preferredLanguages, primaryLanguage } = useLanguagePreferences();
   const [targetLang, setTargetLang] = useState<string>(primaryLanguage);
@@ -330,13 +354,44 @@ function ReaderBody({
 
   const displayedTitle = showTranslated && translatedData ? translatedData.title : article.title;
 
+  function captureTextSelection() {
+    if (typeof window === "undefined") return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    const raw = selection.toString().trim().replace(/\s+/g, " ");
+    const wordCount = raw.split(" ").filter(Boolean).length;
+    if (!raw || raw.length > 60 || wordCount > 5) return;
+
+    const anchorText = selection.anchorNode?.textContent ?? "";
+    const sentence = anchorText.trim().slice(0, 320) || undefined;
+    setSelectedWordInfo({ word: raw, sentence, auto: true });
+    setWordToolOpen(true);
+  }
+
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3 sm:px-6">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3 sm:px-6">
         <p className="truncate text-sm font-medium text-ink-muted">
           {article.feedTitle ?? extracted?.siteName ?? "Article"}
         </p>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+          <FontSizeControl compact />
+          <button
+            type="button"
+            onClick={() => {
+              setWordToolOpen((prev) => !prev);
+              if (wordToolOpen) setSelectedWordInfo({ word: "", auto: false });
+            }}
+            aria-expanded={wordToolOpen}
+            className={`inline-flex min-h-10 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-medium ${
+              wordToolOpen
+                ? "border-accent bg-accent-soft text-ink"
+                : "border-line text-ink hover:border-accent hover:text-accent"
+            }`}
+          >
+            <BookA aria-hidden="true" className="size-3.5 text-accent" />
+            <span>Explain word</span>
+          </button>
           <button
             type="button"
             onClick={onTogglePresetWidth}
@@ -461,21 +516,47 @@ function ReaderBody({
           {/* Stage 7: summarizes whichever version is on screen, entirely on this device. */}
           <LocalSummary content={activeSourceBody} isHtml={activeIsHtml} />
 
-          {showTranslated && translatedData ? (
-            <div lang={translatedData.lang}>
-              {translatedData.isHtml ? (
-                <ArticleContent html={translatedData.body} baseUrl={extracted?.pageUrl ?? article.url} />
-              ) : (
-                <div className="mt-6 font-serif text-lg leading-8 whitespace-pre-line">{translatedData.body}</div>
-              )}
+          {/* Per-article note-making pad */}
+          <ArticleNotesPad
+            articleUrl={article.url}
+            articleTitle={article.title}
+            onNotesChanged={onNotesChanged}
+          />
+
+          {/* AI Word Meaning Assistant (also opens automatically when double-clicking / highlighting 1-5 words in the article) */}
+          {wordToolOpen && (
+            <div className="mt-4">
+              <WordAssistantBox
+                key={`${selectedWordInfo.word}-${selectedWordInfo.auto ? "1" : "0"}`}
+                initialWord={selectedWordInfo.word}
+                contextSentence={selectedWordInfo.sentence}
+                autoLookup={selectedWordInfo.auto}
+                articleUrl={article.url}
+                articleTitle={article.title}
+                onSavedToNotes={onNotesChanged}
+                onClose={() => setWordToolOpen(false)}
+              />
             </div>
-          ) : showFull && extracted ? (
-            <div lang={extracted.lang}>
-              <ArticleContent html={extracted.contentHtml} baseUrl={extracted.pageUrl} />
-            </div>
-          ) : (
-            <FeedText article={article} />
           )}
+
+          {/* Double-click or highlight any word in the article below to explain its meaning */}
+          <div onDoubleClick={captureTextSelection} onMouseUp={captureTextSelection}>
+            {showTranslated && translatedData ? (
+              <div lang={translatedData.lang}>
+                {translatedData.isHtml ? (
+                  <ArticleContent html={translatedData.body} baseUrl={extracted?.pageUrl ?? article.url} />
+                ) : (
+                  <div className="mt-6 font-serif text-lg leading-8 whitespace-pre-line">{translatedData.body}</div>
+                )}
+              </div>
+            ) : showFull && extracted ? (
+              <div lang={extracted.lang}>
+                <ArticleContent html={extracted.contentHtml} baseUrl={extracted.pageUrl} />
+              </div>
+            ) : (
+              <FeedText article={article} />
+            )}
+          </div>
 
           <div className="mt-8 border-t border-line pt-4 text-sm text-ink-muted">
             {showFull && extracted ? (

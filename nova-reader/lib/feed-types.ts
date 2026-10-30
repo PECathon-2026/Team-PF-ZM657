@@ -134,6 +134,17 @@ export type ReadableArticle = Pick<FeedItem, "id" | "title" | "url" | "summary" 
   feedTitle?: string;
 };
 
+/** A personal note or saved word explanation stored locally in IndexedDB. */
+export type ReaderNote = {
+  id: string;
+  title: string;
+  content: string;
+  articleUrl?: string;
+  articleTitle?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 /** Optional settings for parseFeedXml(). Defaults are the limits below. */
 export type ParserOptions = {
   /** Maximum articles to return (1–50). Default 50. */

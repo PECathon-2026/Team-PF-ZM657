@@ -1,16 +1,15 @@
 "use client";
-// Hands-free voice assistant for blind and low-vision readers.
-// Trigger phrase: "Hey Nova" (also supports one-shot "Hey Nova <keyword>",
-// clicking the Voice button, or pressing Alt+V).
-// Workflow:
-//   1. Wake phrase "Hey Nova" → prompts for an article keyword.
-//   2. Keyword spoken → searches loaded feed items + saved/cached IndexedDB feeds.
-//   3. Reads out matching blog headings one by one via speechSynthesis.
-//   4. When the user says "Yes" (or "Open"), opens that article's URL in ReaderView
-//      (and offers direct navigation). Saying "Next" / "No" reads the next match.
+// Hands-free voice assistant for blind and low-vision readers ("Hey Nova").
+// Dual-engine microphone architecture:
+//   1. Explicitly requests `navigator.mediaDevices.getUserMedia({ audio: true })`
+//      on click so the browser shows its native microphone permission dialog.
+//   2. Uses native `SpeechRecognition` when supported and permitted, AND automatically
+//      falls back to `MediaRecorder` + Web Audio silence detection + `POST /api/transcribe`
+//      (gemini-3.5-transcribe) whenever running inside cross-origin iframes, Firefox,
+//      Safari, or Brave where `webkitSpeechRecognition` is blocked or absent.
 
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
-import { Mic, MicOff, Volume2, X } from "lucide-react";
+import { ExternalLink, LoaderCircle, Mic, MicOff, Square, Volume2, X } from "lucide-react";
 import { getSavedArticles, listCachedFeeds } from "@/lib/db";
 import type { ReadableArticle } from "@/lib/feed-types";
 
@@ -18,6 +17,7 @@ type VoicePhase =
   | "off"
   | "wake-standby" // listening for "hey nova"
   | "awaiting-keyword" // heard "hey nova", listening for search keyword
+  | "transcribing" // uploading recorded clip to /api/transcribe
   | "speaking" // reading prompt or article heading aloud
   | "confirming"; // waiting for "yes" / "next" / "cancel"
 
@@ -46,21 +46,50 @@ function getSpeechRecognitionCtor(): (new () => SpeechRecognitionInstance) | nul
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
+function hasMediaRecorderSupport(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    Boolean(navigator.mediaDevices?.getUserMedia) &&
+    typeof MediaRecorder !== "undefined"
+  );
+}
+
+const noopSubscribe = () => () => {};
+
 type VoiceAssistantProps = {
   currentArticles: ReadableArticle[];
   onOpenArticle: (article: ReadableArticle) => void;
 };
 
-const noopSubscribe = () => () => {};
-
 export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistantProps) {
   const supported = useSyncExternalStore(
     noopSubscribe,
-    () => Boolean(getSpeechRecognitionCtor()),
+    () => Boolean(getSpeechRecognitionCtor()) || hasMediaRecorderSupport(),
     () => false,
   );
+  const inIframe = useSyncExternalStore(
+    noopSubscribe,
+    () => {
+      try {
+        return window.self !== window.top;
+      } catch {
+        return true;
+      }
+    },
+    () => false,
+  );
+  const currentHref = useSyncExternalStore(
+    noopSubscribe,
+    () => window.location.href,
+    () => "/",
+  );
+
   const [phase, setPhase] = useState<VoicePhase>("off");
   const [panelOpen, setPanelOpen] = useState(false);
+  const [micBlocked, setMicBlocked] = useState(false);
+  const [isRecordingClip, setIsRecordingClip] = useState(false);
+  const [micLevel, setMicLevel] = useState(0);
   const [announcement, setAnnouncement] = useState<string>(
     "Say “Hey Nova” when voice mode is active, or press Alt+V to search articles by voice.",
   );
@@ -70,11 +99,17 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
   const [manualInput, setManualInput] = useState("");
 
   const phaseRef = useRef<VoicePhase>("off");
+  const preTranscribePhaseRef = useRef<VoicePhase>("awaiting-keyword");
   const matchesRef = useRef<ReadableArticle[]>([]);
   const matchIndexRef = useRef(0);
   const articlesRef = useRef<ReadableArticle[]>(currentArticles);
   const onOpenRef = useRef(onOpenArticle);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const levelRafRef = useRef<number | null>(null);
+  const useRecorderFallbackRef = useRef(false);
   const shouldKeepListeningRef = useRef(false);
   const isSpeakingRef = useRef(false);
 
@@ -91,10 +126,47 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
     setPhase(next);
   }
 
+  function releaseMediaResources() {
+    if (levelRafRef.current !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(levelRafRef.current);
+      levelRafRef.current = null;
+    }
+    setMicLevel(0);
+    setIsRecordingClip(false);
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+    } catch {
+      // ignore
+    }
+    mediaRecorderRef.current = null;
+    if (mediaStreamRef.current) {
+      for (const track of mediaStreamRef.current.getTracks()) {
+        track.stop();
+      }
+      mediaStreamRef.current = null;
+    }
+    if (audioContextRef.current) {
+      void audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+  }
+
+  function resumeListeningAfterSpeech(targetPhase: VoicePhase) {
+    if (!shouldKeepListeningRef.current || targetPhase === "off") return;
+    if (useRecorderFallbackRef.current) {
+      void startClipRecording();
+    } else {
+      startRecognitionLoop();
+    }
+  }
+
   function speak(text: string, nextPhaseAfterSpeech: VoicePhase) {
     setAnnouncement(text);
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       updatePhase(nextPhaseAfterSpeech);
+      resumeListeningAfterSpeech(nextPhaseAfterSpeech);
       return;
     }
 
@@ -104,29 +176,43 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
       try {
         recognitionRef.current?.stop();
       } catch {
-        // ignore if already stopped
+        // ignore
+      }
+      try {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+          mediaRecorderRef.current.stop();
+        }
+      } catch {
+        // ignore
       }
 
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 1.0;
-      const finish = () => {
+      let finished = false;
+      const watchdogMs = Math.min(18_000, Math.max(3_200, text.length * 80));
+      const watchdog = window.setTimeout(() => {
+        if (!finished && !window.speechSynthesis.speaking) {
+          finish();
+        }
+      }, watchdogMs);
+
+      function finish() {
+        if (finished) return;
+        finished = true;
+        window.clearTimeout(watchdog);
         isSpeakingRef.current = false;
-        if (!shouldKeepListeningRef.current && nextPhaseAfterSpeech !== "off") {
-          updatePhase(nextPhaseAfterSpeech);
-          return;
-        }
         updatePhase(nextPhaseAfterSpeech);
-        if (shouldKeepListeningRef.current && nextPhaseAfterSpeech !== "off") {
-          startRecognitionLoop();
-        }
-      };
+        resumeListeningAfterSpeech(nextPhaseAfterSpeech);
+      }
+
       utterance.onend = finish;
       utterance.onerror = finish;
       window.speechSynthesis.speak(utterance);
     } catch {
       isSpeakingRef.current = false;
       updatePhase(nextPhaseAfterSpeech);
+      resumeListeningAfterSpeech(nextPhaseAfterSpeech);
     }
   }
 
@@ -230,15 +316,13 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
     setLastHeard(text);
     const normalized = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
 
-    const currentPhase = phaseRef.current;
+    const currentPhase = phaseRef.current === "transcribing" ? preTranscribePhaseRef.current : phaseRef.current;
 
-    // Global cancel command in any active phase
     if (/^(cancel|stop listening|exit|never mind)$/.test(normalized)) {
       speak("Cancelled. Say Hey Nova whenever you need me.", "wake-standby");
       return;
     }
 
-    // Wake phrase ("hey nova", "hi nova", "ok nova", "hello nova") works from standby or any state
     const wakeMatch = normalized.match(/\b(?:hey|hi|hello|ok|okay)\s+nova\b(.*)$/i);
     if (wakeMatch) {
       const remainder = (wakeMatch[1] ?? "").trim();
@@ -290,11 +374,198 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
         return;
       }
     }
+
+    // Convenience: if user clicked "Record voice command" while in wake-standby and spoke a keyword directly, search it!
+    if (currentPhase === "wake-standby" && useRecorderFallbackRef.current && normalized.length >= 2) {
+      await searchByKeyword(text);
+    }
+  }
+
+  /** Requests real browser microphone stream and starts live audio level meter. */
+  async function ensureMicrophoneStream(): Promise<MediaStream | null> {
+    if (mediaStreamRef.current && mediaStreamRef.current.active) {
+      setMicBlocked(false);
+      return mediaStreamRef.current;
+    }
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      return null;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+      mediaStreamRef.current = stream;
+      setMicBlocked(false);
+
+      // Attach live visual audio meter
+      const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        audioContextRef.current = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        const tick = () => {
+          if (!mediaStreamRef.current?.active) return;
+          analyser.getByteFrequencyData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) sum += data[i];
+          const avg = sum / data.length;
+          setMicLevel(Math.min(100, Math.round((avg / 90) * 100)));
+          levelRafRef.current = window.requestAnimationFrame(tick);
+        };
+        levelRafRef.current = window.requestAnimationFrame(tick);
+      }
+
+      return stream;
+    } catch {
+      setMicBlocked(true);
+      return null;
+    }
+  }
+
+  /** Fallback recorder using MediaRecorder + silence detection + /api/transcribe (gemini-3.5-transcribe). */
+  async function startClipRecording() {
+    if (isSpeakingRef.current) return;
+    const stream = await ensureMicrophoneStream();
+    if (!stream || typeof MediaRecorder === "undefined") {
+      setAnnouncement(
+        "Microphone permission is blocked by your browser or iframe settings. Allow microphone access in the address bar, open in a full tab, or type your command below.",
+      );
+      return;
+    }
+
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+    } catch {
+      // ignore
+    }
+
+    const preferredMime =
+      typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported("audio/mp4")
+          ? "audio/mp4"
+          : "";
+
+    const recorder = preferredMime ? new MediaRecorder(stream, { mimeType: preferredMime }) : new MediaRecorder(stream);
+    const chunks: BlobPart[] = [];
+    let heardVoice = false;
+    let silenceSince = Date.now();
+    const startedAt = Date.now();
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    const silenceCheckInterval = window.setInterval(() => {
+      if (recorder.state !== "recording") {
+        window.clearInterval(silenceCheckInterval);
+        return;
+      }
+      // Auto-stop after 7s max or 1.4s of quiet after voice was detected
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > 7_500 || (heardVoice && Date.now() - silenceSince > 1_400)) {
+        window.clearInterval(silenceCheckInterval);
+        try {
+          recorder.stop();
+        } catch {
+          // ignore
+        }
+      }
+    }, 200);
+
+    // Watch mic level via AudioContext analyser if available
+    const monitorStream = audioContextRef.current;
+    let monitorRaf: number | null = null;
+    if (monitorStream) {
+      const source = monitorStream.createMediaStreamSource(stream);
+      const analyser = monitorStream.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      const checkVoice = () => {
+        if (recorder.state !== "recording") return;
+        analyser.getByteFrequencyData(buf);
+        let total = 0;
+        for (let i = 0; i < buf.length; i++) total += buf[i];
+        const mean = total / buf.length;
+        if (mean > 14) {
+          heardVoice = true;
+          silenceSince = Date.now();
+        }
+        monitorRaf = window.requestAnimationFrame(checkVoice);
+      };
+      monitorRaf = window.requestAnimationFrame(checkVoice);
+    }
+
+    recorder.onstop = async () => {
+      window.clearInterval(silenceCheckInterval);
+      if (monitorRaf !== null) window.cancelAnimationFrame(monitorRaf);
+      setIsRecordingClip(false);
+      if (isSpeakingRef.current || chunks.length === 0) return;
+
+      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      if (blob.size < 800) {
+        if (shouldKeepListeningRef.current && !isSpeakingRef.current) {
+          void startClipRecording();
+        }
+        return;
+      }
+
+      preTranscribePhaseRef.current = phaseRef.current === "off" ? "awaiting-keyword" : phaseRef.current;
+      updatePhase("transcribing");
+      setAnnouncement("Transcribing your voice command…");
+
+      try {
+        const base64 = await blobToBase64(blob);
+        const res = await fetch("/api/transcribe", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ audioBase64: base64, mimeType: blob.type || "audio/webm" }),
+        });
+        const data = (await res.json()) as { success?: boolean; transcript?: string; error?: { message?: string } };
+        updatePhase(preTranscribePhaseRef.current);
+
+        if (res.ok && data.success && data.transcript?.trim()) {
+          await processTranscript(data.transcript.trim());
+        } else if (shouldKeepListeningRef.current && !isSpeakingRef.current) {
+          setAnnouncement("Listening… Say “Hey Nova” and a keyword, or tap Stop when finished speaking.");
+          void startClipRecording();
+        }
+      } catch {
+        updatePhase(preTranscribePhaseRef.current);
+        setAnnouncement("Could not reach voice transcription right now. Try speaking again or type below.");
+      }
+    };
+
+    mediaRecorderRef.current = recorder;
+    setIsRecordingClip(true);
+    recorder.start();
+  }
+
+  function stopClipRecordingNow() {
+    try {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+    } catch {
+      // ignore
+    }
   }
 
   function startRecognitionLoop() {
     const Ctor = getSpeechRecognitionCtor();
-    if (!Ctor || isSpeakingRef.current) return;
+    if (!Ctor) {
+      useRecorderFallbackRef.current = true;
+      void startClipRecording();
+      return;
+    }
+    if (isSpeakingRef.current) return;
 
     try {
       recognitionRef.current?.abort();
@@ -317,17 +588,34 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
     };
 
     recognition.onerror = (event) => {
-      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+      if (
+        event.error === "not-allowed" ||
+        event.error === "service-not-allowed" ||
+        event.error === "network" ||
+        event.error === "audio-capture"
+      ) {
+        // Browser SpeechRecognition failed or is restricted inside iframe -> seamlessly switch to MediaRecorder + /api/transcribe!
+        if (hasMediaRecorderSupport()) {
+          useRecorderFallbackRef.current = true;
+          try {
+            recognition.abort();
+          } catch {
+            // ignore
+          }
+          void startClipRecording();
+          return;
+        }
         shouldKeepListeningRef.current = false;
+        setMicBlocked(true);
         updatePhase("off");
         setAnnouncement(
-          "Microphone access was blocked. Allow microphone permission in your browser, or type a command below.",
+          "Microphone access was blocked. Allow microphone permission in your browser address bar, or type a command below.",
         );
       }
     };
 
     recognition.onend = () => {
-      if (shouldKeepListeningRef.current && !isSpeakingRef.current) {
+      if (shouldKeepListeningRef.current && !isSpeakingRef.current && !useRecorderFallbackRef.current) {
         try {
           recognition.start();
         } catch {
@@ -340,18 +628,29 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
     try {
       recognition.start();
     } catch {
-      // already started
+      if (hasMediaRecorderSupport()) {
+        useRecorderFallbackRef.current = true;
+        void startClipRecording();
+      }
     }
   }
 
-  function enableVoiceMode(triggerImmediatePrompt = false) {
+  async function enableVoiceMode(triggerImmediatePrompt = false) {
     setPanelOpen(true);
-    if (!getSpeechRecognitionCtor()) {
+
+    // 1. Trigger native browser microphone prompt right inside the user click gesture!
+    const stream = await ensureMicrophoneStream();
+
+    if (!getSpeechRecognitionCtor() && !stream) {
       updatePhase("awaiting-keyword");
       setAnnouncement(
-        "Voice recognition is not built into this browser, so you can type a keyword or command below and NOVA will read results aloud.",
+        "Microphone access wasn't granted by this browser frame. Allow microphone in your address bar (or open in a full tab), or type your voice command below and NOVA will still read results aloud.",
       );
       return;
+    }
+
+    if (!getSpeechRecognitionCtor() && stream) {
+      useRecorderFallbackRef.current = true;
     }
 
     shouldKeepListeningRef.current = true;
@@ -359,19 +658,25 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
       speak("Voice assistant active. Say a keyword to find articles, or say Hey Nova anytime.", "awaiting-keyword");
     } else {
       updatePhase("wake-standby");
-      startRecognitionLoop();
-      speak("Hands-free mode enabled. Say Hey Nova whenever you want to search articles.", "wake-standby");
+      if (useRecorderFallbackRef.current) {
+        speak("Hands-free microphone active. Say Hey Nova and your keyword.", "wake-standby");
+      } else {
+        startRecognitionLoop();
+        speak("Hands-free mode enabled. Say Hey Nova whenever you want to search articles.", "wake-standby");
+      }
     }
   }
 
   function disableVoiceMode() {
     shouldKeepListeningRef.current = false;
     isSpeakingRef.current = false;
+    useRecorderFallbackRef.current = false;
     try {
       recognitionRef.current?.abort();
     } catch {
       // ignore
     }
+    releaseMediaResources();
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -379,13 +684,12 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
     setAnnouncement("Voice mode turned off.");
   }
 
-  // Keyboard shortcut Alt+V for blind / screen-reader users
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.altKey && event.key.toLowerCase() === "v") {
         event.preventDefault();
         if (phaseRef.current === "off") {
-          enableVoiceMode(true);
+          void enableVoiceMode(true);
         } else {
           speak("Listening. Say a keyword to search articles.", "awaiting-keyword");
         }
@@ -400,6 +704,7 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
       } catch {
         // ignore
       }
+      releaseMediaResources();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -425,7 +730,7 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
           if (isActive) {
             setPanelOpen((open) => !open);
           } else {
-            enableVoiceMode(false);
+            void enableVoiceMode(false);
           }
         }}
         aria-pressed={isActive}
@@ -480,11 +785,65 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
             </button>
           </div>
 
-          <div className="mt-3 rounded-xl bg-surface-muted p-3 text-sm text-ink">
+          <ol className="mt-3 grid grid-cols-3 gap-1.5 text-xs" aria-label="How voice search works">
+            <li
+              className={`rounded-lg border px-2 py-1.5 ${
+                phase === "wake-standby" ? "border-accent bg-accent-soft font-semibold text-ink" : "border-line text-ink-muted"
+              }`}
+            >
+              1. Say “Hey Nova”
+            </li>
+            <li
+              className={`rounded-lg border px-2 py-1.5 ${
+                phase === "awaiting-keyword" ? "border-accent bg-accent-soft font-semibold text-ink" : "border-line text-ink-muted"
+              }`}
+            >
+              2. Say keyword
+            </li>
+            <li
+              className={`rounded-lg border px-2 py-1.5 ${
+                phase === "confirming" ? "border-accent bg-accent-soft font-semibold text-ink" : "border-line text-ink-muted"
+              }`}
+            >
+              3. Say “Yes” / “Next”
+            </li>
+          </ol>
+
+          {/* Live microphone input level bar when mic stream is active */}
+          {isActive && !micBlocked && (
+            <div className="mt-2.5 flex items-center gap-2 text-xs text-ink-muted">
+              <span id="mic-level-label">Mic input</span>
+              <progress
+                aria-labelledby="mic-level-label"
+                max={100}
+                value={Math.max(6, micLevel)}
+                className="h-2 flex-1 overflow-hidden rounded-full accent-[var(--accent)]"
+              />
+              {phase === "transcribing" && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin text-accent" />}
+            </div>
+          )}
+
+          <div className="mt-2.5 rounded-xl bg-surface-muted p-3 text-sm text-ink">
             <p className="font-medium">{announcement}</p>
             {lastHeard && (
               <p className="mt-1 text-xs text-ink-muted">
                 Last heard: <span className="text-ink">“{lastHeard}”</span>
+              </p>
+            )}
+            {micBlocked && inIframe && (
+              <p className="mt-2 border-t border-line pt-2 text-xs text-ink-muted">
+                Your browser blocked microphone access inside the embedded preview frame. Allow Microphone in your
+                browser&apos;s site icon, or{" "}
+                <a
+                  href={currentHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-semibold text-accent underline underline-offset-2"
+                >
+                  open NOVA Reader in a full browser tab
+                  <ExternalLink aria-hidden="true" className="size-3" />
+                </a>
+                .
               </p>
             )}
           </div>
@@ -537,14 +896,30 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
             {isActive ? (
               <>
-                <button
-                  type="button"
-                  onClick={() => speak("Listening. Say a keyword to search articles.", "awaiting-keyword")}
-                  className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
-                >
-                  <Mic aria-hidden="true" className="size-3.5" />
-                  Search by keyword now
-                </button>
+                {isRecordingClip ? (
+                  <button
+                    type="button"
+                    onClick={stopClipRecordingNow}
+                    className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+                  >
+                    <Square aria-hidden="true" className="size-3.5" />
+                    Done speaking (Send)
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      useRecorderFallbackRef.current = true;
+                      updatePhase(phaseRef.current === "confirming" ? "confirming" : "awaiting-keyword");
+                      setAnnouncement("Listening now — speak your keyword or command, then pause.");
+                      void startClipRecording();
+                    }}
+                    className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+                  >
+                    <Mic aria-hidden="true" className="size-3.5" />
+                    Speak command now
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={disableVoiceMode}
@@ -557,11 +932,11 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
             ) : (
               <button
                 type="button"
-                onClick={() => enableVoiceMode(true)}
+                onClick={() => void enableVoiceMode(true)}
                 className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
               >
                 <Mic aria-hidden="true" className="size-3.5" />
-                {supported ? "Start listening (“Hey Nova”)" : "Enable audio reader"}
+                {supported ? "Allow mic & start (“Hey Nova”)" : "Enable audio reader"}
               </button>
             )}
           </div>
@@ -569,4 +944,17 @@ export function VoiceAssistant({ currentArticles, onOpenArticle }: VoiceAssistan
       )}
     </div>
   );
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const commaIdx = result.indexOf(",");
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
+    reader.readAsDataURL(blob);
+  });
 }

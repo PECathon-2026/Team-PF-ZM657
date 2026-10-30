@@ -20,6 +20,7 @@ const csp = [
   `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:${isDev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
+  "media-src 'self' blob: data:",
   "font-src 'self'",
   `connect-src 'self' blob: data: https://huggingface.co https://*.huggingface.co https://*.hf.co${isDev ? " ws: wss: http://localhost:*" : ""}`,
   "worker-src 'self' blob:",
@@ -36,8 +37,11 @@ const securityHeaders = [
   ...(allowPreviewFrame ? [] : [{ key: "X-Frame-Options", value: "DENY" }]),
   // Never tell the blogs a reader clicks through to that they came from NOVA Reader.
   { key: "Referrer-Policy", value: "no-referrer" },
-  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()" },
-  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+  {
+    key: "Permissions-Policy",
+    value: `camera=(), microphone=${allowPreviewFrame ? "*" : "(self)"}, geolocation=(), payment=(), usb=(), browsing-topics=()`,
+  },
+  ...(allowPreviewFrame ? [] : [{ key: "Cross-Origin-Opener-Policy", value: "same-origin" }]),
   // Browsers ignore HSTS on plain http (e.g. localhost); it applies once deployed on HTTPS.
   { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
 ];

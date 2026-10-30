@@ -13,15 +13,19 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArticleCard } from "@/components/ArticleCard";
 import { FeedForm } from "@/components/FeedForm";
+import { FontSizeControl, FontSizeProvider } from "@/components/FontSizeProvider";
 import { LanguagePreferenceButton, LanguagePreferencesPrompt, LanguageProvider } from "@/components/LanguagePreferences";
 import { LocalAiProvider } from "@/components/LocalAiProvider";
 import { LocalSummary } from "@/components/LocalSummary";
+import { NotesPanel } from "@/components/NotesWorkspace";
 import { ReaderView } from "@/components/ReaderView";
 import { ThemeProvider, ThemeToggle } from "@/components/ThemeProvider";
 import { VoiceAssistant } from "@/components/VoiceAssistant";
+import { WordAssistantBox } from "@/components/WordAssistant";
+import { getNotes } from "@/lib/db";
 import { buildExtractiveSummary } from "@/lib/extractive-summary";
 import { detectContentLanguage, LANGUAGE_STORAGE_KEY, needsTranslation } from "@/lib/languages";
-import type { ReadableArticle } from "@/lib/feed-types";
+import type { ReadableArticle, ReaderNote } from "@/lib/feed-types";
 
 beforeAll(() => {
   if (!HTMLDialogElement.prototype.showModal) {
@@ -258,3 +262,111 @@ describe("6. Extractive & localized summary output", () => {
     expect(await screen.findByText("Les flux RSS indépendants protègent la vie privée.")).toBeTruthy();
   });
 });
+
+describe("7. User-adjustable font size", () => {
+  it("increases and decreases root font size and persists preference", async () => {
+    const user = userEvent.setup();
+    render(
+      <FontSizeProvider>
+        <FontSizeControl />
+      </FontSizeProvider>,
+    );
+
+    expect(document.documentElement.style.fontSize).toBe("100%");
+    await user.click(screen.getByRole("button", { name: "Increase font size" }));
+    expect(document.documentElement.style.fontSize).toBe("112.5%");
+    expect(window.localStorage.getItem("nova-font-scale")).toBe("lg");
+
+    await user.click(screen.getByRole("button", { name: "Decrease font size" }));
+    expect(document.documentElement.style.fontSize).toBe("100%");
+    expect(window.localStorage.getItem("nova-font-scale")).toBe("md");
+  });
+});
+
+describe("8. AI Word Meaning Assistant & 9. Note-making workspace", () => {
+  it("explains a word via /api/define and saves the definition directly to IndexedDB notes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            explanation: {
+              word: "ephemeral",
+              phonetic: "/əˈfem(ə)rəl/",
+              partOfSpeech: "adjective",
+              meaning: "Lasting for a very short time.",
+              inContext: "Refers to fleeting social media feeds compared to durable RSS archives.",
+              example: "Fashions are ephemeral, changing with every season.",
+              synonyms: ["fleeting", "transient"],
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    const user = userEvent.setup();
+    render(
+      <LanguageProvider>
+        <WordAssistantBox articleUrl="https://blog.example/post" articleTitle="Durable Feeds" />
+      </LanguageProvider>,
+    );
+
+    const input = screen.getByLabelText("Word or phrase to explain");
+    await user.type(input, "ephemeral");
+    await user.click(screen.getByRole("button", { name: "Explain" }));
+
+    expect(await screen.findByText("Lasting for a very short time.")).toBeTruthy();
+    expect(screen.getByText(/Refers to fleeting social media feeds/i)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /Save to Notes/i }));
+    expect(await screen.findByText(/Saved to Notes/i)).toBeTruthy();
+
+    const storedNotes = await getNotes();
+    expect(storedNotes.some((n) => n.title === "Word: ephemeral")).toBe(true);
+  });
+
+  it("creates, displays, and deletes personal notes in NotesPanel", async () => {
+    const user = userEvent.setup();
+    let currentNotes: ReaderNote[] = await getNotes();
+    const { rerender } = render(
+      <NotesPanel
+        notes={currentNotes}
+        onRefresh={async () => {
+          currentNotes = await getNotes();
+          rerender(<NotesPanel notes={currentNotes} onRefresh={() => {}} />);
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /New note/i }));
+    await user.type(screen.getByLabelText("Note title"), "Open Web Takeaways");
+    await user.type(screen.getByLabelText("Note content"), "RSS feeds respect reader attention.");
+    await user.click(screen.getByRole("button", { name: "Save note" }));
+
+    await waitFor(async () => {
+      const updated = await getNotes();
+      expect(updated.some((n) => n.title === "Open Web Takeaways")).toBe(true);
+    });
+
+    currentNotes = await getNotes();
+    rerender(
+      <NotesPanel
+        notes={currentNotes}
+        onRefresh={async () => {
+          currentNotes = await getNotes();
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Open Web Takeaways")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Delete note Open Web Takeaways" }));
+
+    await waitFor(async () => {
+      const afterDelete = await getNotes();
+      expect(afterDelete.some((n) => n.title === "Open Web Takeaways")).toBe(false);
+    });
+  });
+});
+

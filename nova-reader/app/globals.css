@@ -80,11 +80,41 @@
   --font-serif: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, Cambria, "Times New Roman", serif;
 }
 
-body {
+html {
   background: var(--bg);
+}
+
+body {
+  background: transparent;
   color: var(--ink);
   font-family: var(--font-sans);
-  transition: background-color 160ms ease, color 160ms ease;
+  transition: color 160ms ease;
+}
+
+/* Interactive hover magnification on buttons & button-styled links. */
+button {
+  cursor: pointer;
+  transition:
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    box-shadow 180ms ease;
+}
+
+button:not(:disabled):not([role="separator"]):hover,
+a[class*="rounded-"]:hover {
+  transform: translateY(-1px) scale(1.035);
+  box-shadow: 0 4px 12px -4px rgb(0 0 0 / 0.12);
+}
+
+button:not(:disabled):not([role="separator"]):active,
+a[class*="rounded-"]:active {
+  transform: translateY(0) scale(0.98);
+}
+
+button:disabled {
+  cursor: not-allowed;
 }
 
 /* A clearly visible keyboard focus ring on every interactive element. */

@@ -1,23 +1,18 @@
 "use client";
 // The home page and the "brain" of the UI.
 // Runs in the BROWSER ("use client"), because it uses state, events and IndexedDB.
-//
-// Data flow:
-//   FeedForm → requestFeed() → lib/feed-client.ts → GET /api/feed → FeedList
-//   Save button → lib/db.ts (IndexedDB) → SavedArticles
-//   Every loaded feed → lib/db.ts cacheFeed() → shown again when offline / on next visit
-//   LanguagePreferencesPrompt → preferred reading languages → inline & reader translation
-//   VoiceAssistant ("Hey Nova") → hands-free keyword search & spoken headings
 
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Bookmark, Cpu, Newspaper, Radar as RadarIcon, Rss, ShieldCheck } from "lucide-react";
+import { Bookmark, Cpu, Newspaper, NotebookPen, Radar as RadarIcon, Rss, ShieldCheck } from "lucide-react";
 import { AIWorkspace } from "@/components/AIWorkspace";
 import { EmptyState } from "@/components/EmptyState";
 import { FeedForm } from "@/components/FeedForm";
 import { FeedList, FeedListSkeleton, formatDateTime } from "@/components/FeedList";
+import { FontSizeControl } from "@/components/FontSizeProvider";
 import { LanguagePreferenceButton, LanguagePreferencesPrompt } from "@/components/LanguagePreferences";
 import { LocalAiProvider } from "@/components/LocalAiProvider";
+import { NotesPanel } from "@/components/NotesWorkspace";
 import { OfflineCopies } from "@/components/OfflineCopies";
 import { OfflineIndicator } from "@/components/OfflineIndicator";
 import { ReaderView } from "@/components/ReaderView";
@@ -25,6 +20,7 @@ import { SavedArticles } from "@/components/SavedArticles";
 import { StatusMessage, type StatusKind } from "@/components/StatusMessage";
 import { ThemeToggle } from "@/components/ThemeProvider";
 import { VoiceAssistant } from "@/components/VoiceAssistant";
+import { WordAssistantHeaderButton } from "@/components/WordAssistant";
 import {
   cacheFeed,
   clearOfflineCopies as clearOfflineCopiesInDb,
@@ -32,12 +28,13 @@ import {
   countExtractedArticles,
   getCachedFeed,
   getLatestCachedFeed,
+  getNotes,
   getSavedArticles,
   removeSavedArticle,
   saveArticle,
 } from "@/lib/db";
 import { loadFeed } from "@/lib/feed-client";
-import type { CachedFeed, FeedInfo, FeedItem, ReadableArticle, SavedArticle } from "@/lib/feed-types";
+import type { CachedFeed, FeedInfo, FeedItem, ReadableArticle, ReaderNote, SavedArticle } from "@/lib/feed-types";
 
 // `retryUrl` is set when trying the same URL again might help.
 type Status = { kind: StatusKind; message: string; retryUrl?: string } | null;
@@ -46,7 +43,7 @@ type Status = { kind: StatusKind; message: string; retryUrl?: string } | null;
 type ShownFeed = { info: FeedInfo; items: FeedItem[]; cachedAt?: string };
 
 /** Mobile viewport section tabs (< 1024px) for zero-clutter touch navigation. */
-type MobileTab = "feed" | "saved" | "tools";
+type MobileTab = "feed" | "saved" | "notes" | "tools";
 
 export default function HomePage() {
   const [feed, setFeed] = useState<ShownFeed | null>(null);
@@ -58,6 +55,9 @@ export default function HomePage() {
   const [saved, setSaved] = useState<SavedArticle[]>([]);
   const [isLoadingSaved, setIsLoadingSaved] = useState(true);
   const [savedError, setSavedError] = useState<string | null>(null);
+
+  // Personal notes from IndexedDB.
+  const [notes, setNotes] = useState<ReaderNote[]>([]);
 
   // Offline feed copies in IndexedDB.
   const [cachedCount, setCachedCount] = useState(0);
@@ -71,7 +71,13 @@ export default function HomePage() {
   const activeRequest = useRef<AbortController | null>(null);
   useEffect(() => () => activeRequest.current?.abort(), []);
 
-  // When the page opens: load saved articles, show the last offline copy
+  function refreshNotes() {
+    getNotes()
+      .then(setNotes)
+      .catch(() => {});
+  }
+
+  // When the page opens: load saved articles, notes, show the last offline copy
   // instantly, then (if online) check for new articles in the background.
   const onLatestCachedFeed = useEffectEvent((latest: CachedFeed | undefined) => {
     if (!latest) return;
@@ -83,6 +89,9 @@ export default function HomePage() {
       .then(setSaved)
       .catch((error: Error) => setSavedError(error.message))
       .finally(() => setIsLoadingSaved(false));
+    getNotes()
+      .then(setNotes)
+      .catch(() => {});
     countCachedFeeds().then(setCachedCount).catch(() => {});
     countExtractedArticles().then(setStoredArticleCount).catch(() => {});
     getLatestCachedFeed().then(onLatestCachedFeed).catch(() => {});
@@ -107,7 +116,6 @@ export default function HomePage() {
 
   async function requestFeed(url: string, options: { background?: boolean } = {}) {
     if (!options.background) setMobileTab("feed");
-    // navigator.onLine is read directly so this is always the current value.
     if (!navigator.onLine) {
       if (await tryOfflineCopy(url, "You are offline.")) return;
       setStatus({
@@ -118,7 +126,6 @@ export default function HomePage() {
       return;
     }
 
-    // Cancel any older request so its answer cannot replace this one.
     activeRequest.current?.abort();
     const controller = new AbortController();
     activeRequest.current = controller;
@@ -127,7 +134,7 @@ export default function HomePage() {
     if (!options.background) setStatus({ kind: "loading", message: "Loading feed…" });
 
     const result = await loadFeed(url, { signal: controller.signal });
-    if (controller.signal.aborted) return; // a newer request took over
+    if (controller.signal.aborted) return;
 
     activeRequest.current = null;
     setIsLoadingFeed(false);
@@ -142,25 +149,24 @@ export default function HomePage() {
         await cacheFeed(url, result.feed, result.items);
         setCachedCount(await countCachedFeeds());
       } catch (error) {
-        // The feed is still shown; only the offline copy failed.
-        if (activeRequest.current) return; // a newer request owns the status message now
+        if (activeRequest.current) return;
         const reason = error instanceof Error ? error.message : "Local storage failed.";
         setStatus({ kind: "info", message: `${loaded} An offline copy could not be kept: ${reason}` });
       }
       return;
     }
 
-    // Connection problems (or a failed background update): fall back to the offline copy.
     const connectionProblem = result.code === "NETWORK_ERROR" || result.code === "CLIENT_TIMEOUT";
     if ((connectionProblem || options.background) && (await tryOfflineCopy(url, result.message))) return;
 
     setStatus({ kind: "error", message: result.message, retryUrl: result.retryable ? url : undefined });
   }
 
-  /** Closing the reader may have stored a new full article, so refresh the count. */
+  /** Closing the reader may have stored a new full article or note, so refresh counts. */
   function closeReader() {
     setReadingArticle(null);
     countExtractedArticles().then(setStoredArticleCount).catch(() => {});
+    refreshNotes();
   }
 
   async function clearOfflineCopies() {
@@ -168,7 +174,7 @@ export default function HomePage() {
     try {
       await clearOfflineCopiesInDb();
       setCachedCount(0);
-      setStoredArticleCount(await countExtractedArticles()); // full text of saved articles is kept
+      setStoredArticleCount(await countExtractedArticles());
       setStatus({ kind: "success", message: "Offline copies were deleted from this device. Saved articles were kept." });
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : "Could not clear offline copies." });
@@ -214,7 +220,7 @@ export default function HomePage() {
         Skip to content
       </a>
 
-      <header className="sticky top-0 z-30 border-b border-line bg-surface/95 backdrop-blur-sm">
+      <header className="sticky top-0 z-30 border-b border-line bg-surface/92 backdrop-blur-md">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6 sm:py-4">
           <div className="min-w-0">
             <h1 className="flex items-center gap-2.5 font-serif text-xl font-bold tracking-tight text-ink sm:text-2xl">
@@ -230,6 +236,8 @@ export default function HomePage() {
 
           <div className="flex flex-wrap items-center gap-2">
             <VoiceAssistant currentArticles={voiceArticles} onOpenArticle={setReadingArticle} />
+            <WordAssistantHeaderButton onSavedToNotes={refreshNotes} />
+            <FontSizeControl />
             <LanguagePreferenceButton />
             <ThemeToggle />
             <Link
@@ -249,12 +257,12 @@ export default function HomePage() {
 
       {/* Mobile-only workspace switcher (< 1024px) for thumb-friendly responsive layout */}
       <nav aria-label="Workspace sections" className="mx-auto max-w-6xl px-4 pt-4 sm:px-6 lg:hidden">
-        <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-line bg-surface p-1.5">
+        <div className="grid grid-cols-4 gap-1 rounded-2xl border border-line bg-surface/95 p-1.5">
           <button
             type="button"
             aria-pressed={mobileTab === "feed"}
             onClick={() => setMobileTab("feed")}
-            className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium transition-colors ${
+            className={`inline-flex min-h-11 items-center justify-center gap-1 rounded-xl px-1.5 text-xs font-medium sm:text-sm ${
               mobileTab === "feed" ? "bg-accent text-accent-ink font-semibold" : "text-ink-muted hover:text-ink"
             }`}
           >
@@ -265,7 +273,7 @@ export default function HomePage() {
             type="button"
             aria-pressed={mobileTab === "saved"}
             onClick={() => setMobileTab("saved")}
-            className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium transition-colors tabular-nums ${
+            className={`inline-flex min-h-11 items-center justify-center gap-1 rounded-xl px-1.5 text-xs font-medium tabular-nums sm:text-sm ${
               mobileTab === "saved" ? "bg-accent text-accent-ink font-semibold" : "text-ink-muted hover:text-ink"
             }`}
           >
@@ -274,9 +282,20 @@ export default function HomePage() {
           </button>
           <button
             type="button"
+            aria-pressed={mobileTab === "notes"}
+            onClick={() => setMobileTab("notes")}
+            className={`inline-flex min-h-11 items-center justify-center gap-1 rounded-xl px-1.5 text-xs font-medium tabular-nums sm:text-sm ${
+              mobileTab === "notes" ? "bg-accent text-accent-ink font-semibold" : "text-ink-muted hover:text-ink"
+            }`}
+          >
+            <NotebookPen aria-hidden="true" className="size-4 shrink-0" />
+            <span className="truncate">Notes{notes.length > 0 ? ` (${notes.length})` : ""}</span>
+          </button>
+          <button
+            type="button"
             aria-pressed={mobileTab === "tools"}
             onClick={() => setMobileTab("tools")}
-            className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium transition-colors ${
+            className={`inline-flex min-h-11 items-center justify-center gap-1 rounded-xl px-1.5 text-xs font-medium sm:text-sm ${
               mobileTab === "tools" ? "bg-accent text-accent-ink font-semibold" : "text-ink-muted hover:text-ink"
             }`}
           >
@@ -286,7 +305,7 @@ export default function HomePage() {
         </div>
       </nav>
 
-      <main id="main" className="mx-auto grid max-w-6xl gap-8 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_23rem]">
+      <main id="main" className="mx-auto grid max-w-6xl gap-8 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_23.5rem]">
         <div className={`min-w-0 space-y-4 ${mobileTab !== "feed" ? "max-lg:hidden" : ""}`}>
           <FeedForm onSubmit={requestFeed} isLoading={isLoadingFeed} />
           {status && (
@@ -322,9 +341,9 @@ export default function HomePage() {
 
         <aside
           className={`space-y-6 ${mobileTab === "feed" ? "max-lg:hidden" : ""}`}
-          aria-label="Saved articles and local features"
+          aria-label="Saved articles, notes and local features"
         >
-          <div className={mobileTab === "tools" ? "max-lg:hidden" : ""}>
+          <div className={mobileTab !== "saved" ? "max-lg:hidden" : ""}>
             <SavedArticles
               articles={saved}
               isLoading={isLoadingSaved}
@@ -333,7 +352,10 @@ export default function HomePage() {
               onRead={setReadingArticle}
             />
           </div>
-          <div className={`space-y-6 ${mobileTab === "saved" ? "max-lg:hidden" : ""}`}>
+          <div className={mobileTab !== "notes" ? "max-lg:hidden" : ""}>
+            <NotesPanel notes={notes} onRefresh={refreshNotes} />
+          </div>
+          <div className={`space-y-6 ${mobileTab !== "tools" ? "max-lg:hidden" : ""}`}>
             <OfflineCopies
               count={cachedCount}
               articleCount={storedArticleCount}
@@ -349,13 +371,13 @@ export default function HomePage() {
         <p className="flex items-start gap-2.5 text-sm leading-relaxed text-ink-muted">
           <ShieldCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-accent" />
           <span>
-            No accounts, no tracking. Saved articles and language preferences stay in this browser. Feeds are fetched
-            through this app&apos;s server without storing your reading history.
+            No accounts, no tracking. Saved articles, reading notes, and language preferences stay in this browser.
+            Feeds are fetched through this app&apos;s server without storing your reading history.
           </span>
         </p>
       </footer>
 
-      <ReaderView article={readingArticle} onClose={closeReader} />
+      <ReaderView article={readingArticle} onClose={closeReader} onNotesChanged={refreshNotes} />
     </LocalAiProvider>
   );
 }

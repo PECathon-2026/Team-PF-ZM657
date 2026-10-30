@@ -10,6 +10,7 @@ import Link from "next/link";
 import { ArrowLeft, Radar, RefreshCw, ShieldCheck } from "lucide-react";
 import { BarList } from "@/components/radar/BarList";
 import { DataTable } from "@/components/radar/DataTable";
+import { FontSizeControl } from "@/components/FontSizeProvider";
 import { LanguagePreferenceButton, LanguagePreferencesPrompt } from "@/components/LanguagePreferences";
 import { StatTile } from "@/components/radar/StatTile";
 import { WeeklyColumns } from "@/components/radar/WeeklyColumns";
@@ -61,6 +62,7 @@ export default function RadarPage() {
             <p className="mt-0.5 text-sm text-ink-muted">What you have saved and read on this device.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <FontSizeControl compact />
             <LanguagePreferenceButton />
             <ThemeToggle />
             <Link

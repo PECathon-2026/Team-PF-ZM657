@@ -12,7 +12,15 @@
 import Dexie, { type EntityTable } from "dexie";
 import "./zod-setup";
 import * as z from "zod";
-import type { CachedFeed, ExtractedArticle, FeedInfo, FeedItem, ReadableArticle, SavedArticle } from "./feed-types";
+import type {
+  CachedFeed,
+  ExtractedArticle,
+  FeedInfo,
+  FeedItem,
+  ReadableArticle,
+  ReaderNote,
+  SavedArticle,
+} from "./feed-types";
 import { logError } from "./log";
 import { feedInfoSchema, feedItemSchema } from "./validation";
 
@@ -26,6 +34,7 @@ class NovaDatabase extends Dexie {
   savedArticles!: EntityTable<SavedArticle, "id">;
   cachedFeeds!: EntityTable<CachedFeed, "requestedUrl">;
   extractedArticles!: EntityTable<ExtractedArticle, "url">;
+  notes!: EntityTable<ReaderNote, "id">;
 
   constructor() {
     super("nova-reader");
@@ -46,6 +55,13 @@ class NovaDatabase extends Dexie {
       savedArticles: "id, savedAt, url",
       cachedFeeds: "requestedUrl, cachedAt",
       extractedArticles: "url, extractedAt",
+    });
+    // Version 4: personal reading notes and saved word definitions.
+    this.version(4).stores({
+      savedArticles: "id, savedAt, url",
+      cachedFeeds: "requestedUrl, cachedAt",
+      extractedArticles: "url, extractedAt",
+      notes: "id, updatedAt, articleUrl",
     });
   }
 }
@@ -320,4 +336,59 @@ export async function listExtractedArticles(): Promise<ExtractedArticle[]> {
     .map((record) => extractedArticleSchema.safeParse(record))
     .filter((parsed) => parsed.success)
     .map((parsed) => parsed.data as ExtractedArticle);
+}
+
+// ---------------------------------------------------------------------------
+// Personal reading notes (Version 4)
+// ---------------------------------------------------------------------------
+
+/** Returns all personal notes, most recently updated first. */
+export function getNotes(): Promise<ReaderNote[]> {
+  return safely(
+    () => getDb().notes.orderBy("updatedAt").reverse().toArray(),
+    "Could not load your notes from local storage.",
+  );
+}
+
+/** Returns notes linked to a specific article URL, newest first. */
+export async function getNotesForArticle(articleUrl: string): Promise<ReaderNote[]> {
+  const list = await safely(
+    () => getDb().notes.where("articleUrl").equals(articleUrl).toArray(),
+    "Could not load notes for this article.",
+  );
+  return list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/** Creates or updates a reading note in IndexedDB. */
+export async function saveNote(input: {
+  id?: string;
+  title: string;
+  content: string;
+  articleUrl?: string;
+  articleTitle?: string;
+  createdAt?: string;
+}): Promise<ReaderNote> {
+  const now = new Date().toISOString();
+  const id =
+    input.id ??
+    (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+
+  const note: ReaderNote = {
+    id,
+    title: input.title.trim().slice(0, 300) || "Untitled note",
+    content: input.content.slice(0, 50_000),
+    articleUrl: input.articleUrl,
+    articleTitle: input.articleTitle,
+    createdAt: input.createdAt ?? now,
+    updatedAt: now,
+  };
+  await safely(() => getDb().notes.put(note), "Could not save this note on your device.");
+  return note;
+}
+
+/** Deletes a personal note by ID. */
+export function deleteNote(id: string): Promise<void> {
+  return safely(() => getDb().notes.delete(id), "Could not delete this note.");
 }
