@@ -19,31 +19,37 @@ type FeedListProps = {
 export function FeedList({ feed, items, savedIds, cachedAt, onToggleSave, onRead }: FeedListProps) {
   return (
     <section aria-labelledby="feed-title" className="space-y-4">
-      <header className="rounded-2xl border border-line bg-surface p-4 sm:p-5">
-        <h2 id="feed-title" className="font-serif text-2xl font-semibold text-ink">
+      <header className="rounded-2xl border border-line bg-surface p-4 sm:p-6">
+        <h2 id="feed-title" className="font-serif text-2xl font-semibold tracking-tight text-ink sm:text-3xl">
           {feed.title}
         </h2>
-        {feed.description && <p className="mt-1 text-ink-muted">{feed.description}</p>}
-        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-ink-muted">
+        {feed.description && <p className="mt-1.5 leading-relaxed text-ink-muted">{feed.description}</p>}
+        <p className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-sm text-ink-muted tabular-nums">
           <span>
             {items.length} {items.length === 1 ? "article" : "articles"}
           </span>
           {cachedAt && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-ink">
-              <HardDrive aria-hidden="true" className="size-3.5" />
-              Offline copy from <time dateTime={cachedAt}>{formatDateTime(cachedAt)}</time>
-            </span>
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="inline-flex items-center gap-1.5 text-ink">
+                <HardDrive aria-hidden="true" className="size-3.5 text-warning" />
+                Offline copy from <time dateTime={cachedAt}>{formatDateTime(cachedAt)}</time>
+              </span>
+            </>
           )}
           {feed.siteUrl && (
-            <a
-              href={feed.siteUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 font-medium text-accent underline-offset-4 hover:underline"
-            >
-              Visit website
-              <ExternalLink aria-hidden="true" className="size-3.5" />
-            </a>
+            <>
+              <span aria-hidden="true">·</span>
+              <a
+                href={feed.siteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-accent underline-offset-4 hover:underline"
+              >
+                Visit website
+                <ExternalLink aria-hidden="true" className="size-3.5" />
+              </a>
+            </>
           )}
         </p>
       </header>

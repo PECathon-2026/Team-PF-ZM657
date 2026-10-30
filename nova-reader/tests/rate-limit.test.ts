@@ -4,7 +4,7 @@ import { getClientKey, InMemoryRateLimiter } from "@/lib/server/rate-limit";
 
 describe("InMemoryRateLimiter", () => {
   it("allows up to the limit, then reports retryAfterSeconds", () => {
-    let now = 1_000;
+    const now = 1_000;
     const limiter = new InMemoryRateLimiter(2, 10_000, 100, () => now);
     expect(limiter.check("client")).toEqual({ allowed: true });
     expect(limiter.check("client")).toEqual({ allowed: true });

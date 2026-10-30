@@ -16,13 +16,15 @@ export function AIWorkspace() {
   const { status, enable, cancel, unload, deleteModel } = useLocalAi();
 
   return (
-    <section aria-labelledby="ai-title" className="rounded-2xl border border-line bg-surface p-4">
-      <h2 id="ai-title" className="flex items-center gap-2 text-lg font-semibold text-ink">
-        <Sparkles aria-hidden="true" className="size-5 text-accent" />
-        Local AI
-        <span className="rounded-full bg-surface-muted px-2 py-0.5 text-xs font-medium text-ink-muted">Optional</span>
-      </h2>
-      <p className="mt-1 flex items-start gap-1.5 text-sm text-ink-muted">
+    <section aria-labelledby="ai-title" className="rounded-2xl border border-line bg-surface p-4 sm:p-5">
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 id="ai-title" className="flex items-center gap-2 text-lg font-semibold text-ink">
+          <Sparkles aria-hidden="true" className="size-5 text-accent" />
+          Local AI
+        </h2>
+        <span className="text-xs font-medium text-ink-muted">Optional · On-device</span>
+      </div>
+      <p className="mt-1.5 flex items-start gap-1.5 text-sm text-ink-muted">
         <ShieldCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
         Runs inside this browser. Article text never leaves your device.
       </p>
@@ -59,7 +61,7 @@ export function AIWorkspace() {
             <button
               type="button"
               onClick={() => enable()}
-              className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-accent px-4 font-semibold text-white hover:bg-accent-strong dark:text-bg"
+              className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-accent px-4 font-semibold text-accent-ink transition-colors hover:bg-accent-strong"
             >
               Download &amp; enable local AI
             </button>
@@ -72,7 +74,7 @@ export function AIWorkspace() {
             <button
               type="button"
               onClick={cancel}
-              className="inline-flex min-h-9 items-center rounded-lg border border-line px-3 font-medium text-ink hover:border-danger hover:text-danger"
+              className="inline-flex min-h-11 items-center rounded-xl border border-line px-3.5 font-medium text-ink hover:border-danger hover:text-danger"
             >
               Cancel download
             </button>
@@ -172,7 +174,7 @@ function SmallButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-line px-3 font-medium text-ink disabled:opacity-60 ${
+      className={`inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-line bg-bg px-3.5 font-medium text-ink transition-colors disabled:opacity-60 ${
         danger ? "hover:border-danger hover:text-danger" : "hover:border-accent hover:text-accent"
       }`}
     >

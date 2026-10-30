@@ -13,8 +13,8 @@ export function OfflineIndicator() {
     <p
       role="status"
       aria-live="polite"
-      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-medium ${
-        isOnline ? "border-accent/40 bg-accent-soft text-ink" : "border-warning/50 bg-warning-soft text-ink"
+      className={`inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 text-sm font-medium whitespace-nowrap ${
+        isOnline ? "border-line bg-bg text-ink" : "border-warning/60 bg-warning-soft text-ink"
       }`}
     >
       {isOnline ? (

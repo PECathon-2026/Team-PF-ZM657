@@ -6,25 +6,36 @@
 
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { LanguageProvider } from "@/components/LanguagePreferences";
 import { ServiceWorkerRegistration } from "@/components/ServiceWorkerRegistration";
+import { ThemeProvider } from "@/components/ThemeProvider";
 
 export const metadata: Metadata = {
   title: "NOVA Reader",
-  description: "A privacy-first, offline-first reader for RSS and Atom feeds. Hackathon MVP.",
+  description: "A privacy-first, offline-first reader for RSS and Atom feeds.",
+  openGraph: {
+    title: "NOVA Reader",
+    description: "A privacy-first, offline-first reader for RSS and Atom feeds.",
+    type: "website",
+  },
 };
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f7f8f6" },
-    { media: "(prefers-color-scheme: dark)", color: "#121614" },
+    { media: "(prefers-color-scheme: light)", color: "#faf9f6" },
+    { media: "(prefers-color-scheme: dark)", color: "#0e1311" },
   ],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en">
-      <body className="min-h-screen antialiased">
-        {children}
+    <html lang="en" suppressHydrationWarning>
+      <body className="min-h-dvh antialiased">
+        <ThemeProvider>
+          <LanguageProvider>
+            {children}
+          </LanguageProvider>
+        </ThemeProvider>
         <ServiceWorkerRegistration />
       </body>
     </html>

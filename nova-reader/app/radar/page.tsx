@@ -10,9 +10,11 @@ import Link from "next/link";
 import { ArrowLeft, Radar, RefreshCw, ShieldCheck } from "lucide-react";
 import { BarList } from "@/components/radar/BarList";
 import { DataTable } from "@/components/radar/DataTable";
+import { LanguagePreferenceButton, LanguagePreferencesPrompt } from "@/components/LanguagePreferences";
 import { StatTile } from "@/components/radar/StatTile";
 import { WeeklyColumns } from "@/components/radar/WeeklyColumns";
 import { StatusMessage } from "@/components/StatusMessage";
+import { ThemeToggle } from "@/components/ThemeProvider";
 import { getSavedArticles, listCachedFeeds, listExtractedArticles } from "@/lib/db";
 import { buildRadar, type RadarReport } from "@/lib/radar";
 
@@ -50,25 +52,31 @@ export default function RadarPage() {
         Skip to content
       </a>
       <header className="border-b border-line bg-surface">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
           <div>
-            <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight text-ink">
+            <h1 className="flex items-center gap-2 font-serif text-xl font-bold tracking-tight text-ink sm:text-2xl">
               <Radar aria-hidden="true" className="size-5 text-accent" />
               Personal Knowledge Radar
             </h1>
             <p className="mt-0.5 text-sm text-ink-muted">What you have saved and read on this device.</p>
           </div>
-          <Link
-            href="/"
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink hover:border-accent hover:text-accent"
-          >
-            <ArrowLeft aria-hidden="true" className="size-4" />
-            Back to reader
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <LanguagePreferenceButton />
+            <ThemeToggle />
+            <Link
+              href="/"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium text-ink transition-colors hover:border-accent hover:text-accent whitespace-nowrap"
+            >
+              <ArrowLeft aria-hidden="true" className="size-4" />
+              Back to reader
+            </Link>
+          </div>
         </div>
       </header>
 
-      <main id="main" className="mx-auto max-w-5xl space-y-6 px-4 py-6 sm:px-6">
+      <LanguagePreferencesPrompt />
+
+      <main id="main" className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <p className="flex max-w-2xl items-start gap-2 text-sm text-ink-muted">
             <ShieldCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
@@ -78,7 +86,7 @@ export default function RadarPage() {
           <button
             type="button"
             onClick={() => setRefreshKey((k) => k + 1)}
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-ink hover:border-accent hover:text-accent"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium text-ink transition-colors hover:border-accent hover:text-accent whitespace-nowrap"
           >
             <RefreshCw aria-hidden="true" className="size-4" />
             Refresh

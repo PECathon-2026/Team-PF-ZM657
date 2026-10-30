@@ -4,6 +4,8 @@
 import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV === "development";
+const allowPreviewFrame =
+  isDev || Boolean(process.env.APP_URL) || process.env.DISABLE_HMR === "true";
 
 // Content-Security-Policy WITHOUT nonces (Next.js 16 guide: "Without Nonces").
 // Nonces would force every page to be rendered per request; our pages are static.
@@ -19,19 +21,19 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self'",
-  `connect-src 'self' blob: data: https://huggingface.co https://*.huggingface.co https://*.hf.co${isDev ? " ws: http://localhost:*" : ""}`,
+  `connect-src 'self' blob: data: https://huggingface.co https://*.huggingface.co https://*.hf.co${isDev ? " ws: wss: http://localhost:*" : ""}`,
   "worker-src 'self' blob:",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
-  "frame-ancestors 'none'",
+  ...(allowPreviewFrame ? [] : ["frame-ancestors 'none'"]),
   "manifest-src 'self'",
 ].join("; ");
 
 const securityHeaders = [
   { key: "Content-Security-Policy", value: csp },
   { key: "X-Content-Type-Options", value: "nosniff" },
-  { key: "X-Frame-Options", value: "DENY" },
+  ...(allowPreviewFrame ? [] : [{ key: "X-Frame-Options", value: "DENY" }]),
   // Never tell the blogs a reader clicks through to that they came from NOVA Reader.
   { key: "Referrer-Policy", value: "no-referrer" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()" },
@@ -41,6 +43,7 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   cacheComponents: true,
   partialPrefetching: true,
   poweredByHeader: false, // do not advertise the framework in every response

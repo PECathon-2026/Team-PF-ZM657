@@ -6,20 +6,25 @@
 //   FeedForm → requestFeed() → lib/feed-client.ts → GET /api/feed → FeedList
 //   Save button → lib/db.ts (IndexedDB) → SavedArticles
 //   Every loaded feed → lib/db.ts cacheFeed() → shown again when offline / on next visit
+//   LanguagePreferencesPrompt → preferred reading languages → inline & reader translation
+//   VoiceAssistant ("Hey Nova") → hands-free keyword search & spoken headings
 
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Radar as RadarIcon, Rss, ShieldCheck } from "lucide-react";
+import { Bookmark, Cpu, Newspaper, Radar as RadarIcon, Rss, ShieldCheck } from "lucide-react";
 import { AIWorkspace } from "@/components/AIWorkspace";
 import { EmptyState } from "@/components/EmptyState";
 import { FeedForm } from "@/components/FeedForm";
-import { LocalAiProvider } from "@/components/LocalAiProvider";
 import { FeedList, FeedListSkeleton, formatDateTime } from "@/components/FeedList";
+import { LanguagePreferenceButton, LanguagePreferencesPrompt } from "@/components/LanguagePreferences";
+import { LocalAiProvider } from "@/components/LocalAiProvider";
 import { OfflineCopies } from "@/components/OfflineCopies";
 import { OfflineIndicator } from "@/components/OfflineIndicator";
 import { ReaderView } from "@/components/ReaderView";
 import { SavedArticles } from "@/components/SavedArticles";
 import { StatusMessage, type StatusKind } from "@/components/StatusMessage";
+import { ThemeToggle } from "@/components/ThemeProvider";
+import { VoiceAssistant } from "@/components/VoiceAssistant";
 import {
   cacheFeed,
   clearOfflineCopies as clearOfflineCopiesInDb,
@@ -40,10 +45,14 @@ type Status = { kind: StatusKind; message: string; retryUrl?: string } | null;
 /** The feed on screen. `cachedAt` is set when it is an offline copy. */
 type ShownFeed = { info: FeedInfo; items: FeedItem[]; cachedAt?: string };
 
+/** Mobile viewport section tabs (< 1024px) for zero-clutter touch navigation. */
+type MobileTab = "feed" | "saved" | "tools";
+
 export default function HomePage() {
   const [feed, setFeed] = useState<ShownFeed | null>(null);
   const [isLoadingFeed, setIsLoadingFeed] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  const [mobileTab, setMobileTab] = useState<MobileTab>("feed");
 
   // Saved articles from IndexedDB.
   const [saved, setSaved] = useState<SavedArticle[]>([]);
@@ -64,7 +73,6 @@ export default function HomePage() {
 
   // When the page opens: load saved articles, show the last offline copy
   // instantly, then (if online) check for new articles in the background.
-  // State is only set inside promise callbacks (after the effect has run).
   const onLatestCachedFeed = useEffectEvent((latest: CachedFeed | undefined) => {
     if (!latest) return;
     showCachedFeed(latest, navigator.onLine ? "Checking for new articles…" : "You are offline.");
@@ -75,7 +83,6 @@ export default function HomePage() {
       .then(setSaved)
       .catch((error: Error) => setSavedError(error.message))
       .finally(() => setIsLoadingSaved(false));
-    // Storage problems here are already reported by the saved-articles section.
     countCachedFeeds().then(setCachedCount).catch(() => {});
     countExtractedArticles().then(setStoredArticleCount).catch(() => {});
     getLatestCachedFeed().then(onLatestCachedFeed).catch(() => {});
@@ -99,6 +106,7 @@ export default function HomePage() {
   }
 
   async function requestFeed(url: string, options: { background?: boolean } = {}) {
+    if (!options.background) setMobileTab("feed");
     // navigator.onLine is read directly so this is always the current value.
     if (!navigator.onLine) {
       if (await tryOfflineCopy(url, "You are offline.")) return;
@@ -161,7 +169,6 @@ export default function HomePage() {
       await clearOfflineCopiesInDb();
       setCachedCount(0);
       setStoredArticleCount(await countExtractedArticles()); // full text of saved articles is kept
-      // A copy already on screen stays visible, but is no longer stored.
       setStatus({ kind: "success", message: "Offline copies were deleted from this device. Saved articles were kept." });
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : "Could not clear offline copies." });
@@ -189,41 +196,98 @@ export default function HomePage() {
   const savedIds = new Set(saved.map((item) => item.id));
   const retryUrl = isLoadingFeed ? undefined : status?.retryUrl;
 
+  const voiceArticles = useMemo<ReadableArticle[]>(() => {
+    const feedArticles: ReadableArticle[] = feed
+      ? feed.items.map((item) => ({ ...item, feedTitle: feed.info.title }))
+      : [];
+    const seen = new Set(feedArticles.map((a) => a.id));
+    const extras = saved.filter((s) => !seen.has(s.id));
+    return [...feedArticles, ...extras];
+  }, [feed, saved]);
+
   return (
     <LocalAiProvider>
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-10 focus:rounded-lg focus:bg-surface focus:px-3 focus:py-2"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-xl focus:bg-surface focus:px-4 focus:py-2.5 focus:font-medium focus:shadow-md"
       >
         Skip to content
       </a>
 
-      <header className="border-b border-line bg-surface">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
-          <div>
-            <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight text-ink">
-              <span className="grid size-8 place-items-center rounded-lg bg-accent text-white dark:text-bg">
+      <header className="sticky top-0 z-30 border-b border-line bg-surface/95 backdrop-blur-sm">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6 sm:py-4">
+          <div className="min-w-0">
+            <h1 className="flex items-center gap-2.5 font-serif text-xl font-bold tracking-tight text-ink sm:text-2xl">
+              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-ink shadow-xs">
                 <Rss aria-hidden="true" className="size-4" />
               </span>
-              NOVA Reader
+              <span>NOVA Reader</span>
             </h1>
-            <p className="mt-0.5 text-sm text-ink-muted">A private, offline-friendly reader for independent blogs.</p>
+            <p className="mt-0.5 text-xs text-ink-muted sm:text-sm">
+              Independent, offline-first reading for RSS &amp; Atom feeds.
+            </p>
           </div>
+
           <div className="flex flex-wrap items-center gap-2">
+            <VoiceAssistant currentArticles={voiceArticles} onOpenArticle={setReadingArticle} />
+            <LanguagePreferenceButton />
+            <ThemeToggle />
             <Link
               href="/radar"
-              className="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-line px-3 text-sm font-medium text-ink hover:border-accent hover:text-accent"
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium text-ink transition-colors hover:border-accent hover:text-accent whitespace-nowrap shrink-0"
             >
-              <RadarIcon aria-hidden="true" className="size-4" />
-              Knowledge Radar
+              <RadarIcon aria-hidden="true" className="size-4 text-accent" />
+              <span>Knowledge Radar</span>
             </Link>
             <OfflineIndicator />
           </div>
         </div>
       </header>
 
-      <main id="main" className="mx-auto grid max-w-6xl gap-8 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <div className="min-w-0 space-y-4">
+      {/* First-visit preferred language(s) prompt + on-demand language selector */}
+      <LanguagePreferencesPrompt />
+
+      {/* Mobile-only workspace switcher (< 1024px) for thumb-friendly responsive layout */}
+      <nav aria-label="Workspace sections" className="mx-auto max-w-6xl px-4 pt-4 sm:px-6 lg:hidden">
+        <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-line bg-surface p-1.5">
+          <button
+            type="button"
+            aria-pressed={mobileTab === "feed"}
+            onClick={() => setMobileTab("feed")}
+            className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium transition-colors ${
+              mobileTab === "feed" ? "bg-accent text-accent-ink font-semibold" : "text-ink-muted hover:text-ink"
+            }`}
+          >
+            <Newspaper aria-hidden="true" className="size-4 shrink-0" />
+            <span className="truncate">Feed</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={mobileTab === "saved"}
+            onClick={() => setMobileTab("saved")}
+            className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium transition-colors tabular-nums ${
+              mobileTab === "saved" ? "bg-accent text-accent-ink font-semibold" : "text-ink-muted hover:text-ink"
+            }`}
+          >
+            <Bookmark aria-hidden="true" className="size-4 shrink-0" />
+            <span className="truncate">Saved{saved.length > 0 ? ` (${saved.length})` : ""}</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={mobileTab === "tools"}
+            onClick={() => setMobileTab("tools")}
+            className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium transition-colors ${
+              mobileTab === "tools" ? "bg-accent text-accent-ink font-semibold" : "text-ink-muted hover:text-ink"
+            }`}
+          >
+            <Cpu aria-hidden="true" className="size-4 shrink-0" />
+            <span className="truncate">AI &amp; Offline</span>
+          </button>
+        </div>
+      </nav>
+
+      <main id="main" className="mx-auto grid max-w-6xl gap-8 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_23rem]">
+        <div className={`min-w-0 space-y-4 ${mobileTab !== "feed" ? "max-lg:hidden" : ""}`}>
           <FeedForm onSubmit={requestFeed} isLoading={isLoadingFeed} />
           {status && (
             <StatusMessage
@@ -250,35 +314,44 @@ export default function HomePage() {
               <EmptyState
                 icon={Rss}
                 title="No feed loaded yet"
-                message="Paste a feed URL above, or pick one of the examples, to see its latest articles."
+                message="Paste an RSS or Atom feed URL above to load its latest articles privately."
               />
             )}
           </div>
         </div>
 
-        <aside className="space-y-6" aria-label="Saved articles and planned features">
-          <SavedArticles
-            articles={saved}
-            isLoading={isLoadingSaved}
-            error={savedError}
-            onRemove={toggleSave}
-            onRead={setReadingArticle}
-          />
-          <OfflineCopies
-            count={cachedCount}
-            articleCount={storedArticleCount}
-            onClear={clearOfflineCopies}
-            isClearing={isClearingCache}
-          />
-          <AIWorkspace />
+        <aside
+          className={`space-y-6 ${mobileTab === "feed" ? "max-lg:hidden" : ""}`}
+          aria-label="Saved articles and local features"
+        >
+          <div className={mobileTab === "tools" ? "max-lg:hidden" : ""}>
+            <SavedArticles
+              articles={saved}
+              isLoading={isLoadingSaved}
+              error={savedError}
+              onRemove={toggleSave}
+              onRead={setReadingArticle}
+            />
+          </div>
+          <div className={`space-y-6 ${mobileTab === "saved" ? "max-lg:hidden" : ""}`}>
+            <OfflineCopies
+              count={cachedCount}
+              articleCount={storedArticleCount}
+              onClear={clearOfflineCopies}
+              isClearing={isClearingCache}
+            />
+            <AIWorkspace />
+          </div>
         </aside>
       </main>
 
-      <footer className="mx-auto max-w-6xl px-4 pb-8 sm:px-6">
-        <p className="flex items-start gap-2 text-sm text-ink-muted">
-          <ShieldCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-          No accounts, no tracking. Saved articles stay in this browser. Feeds are fetched through this app&apos;s server,
-          which does not store them. Hackathon MVP — not production-ready.
+      <footer className="mx-auto max-w-6xl border-t border-line/60 px-4 py-8 sm:px-6">
+        <p className="flex items-start gap-2.5 text-sm leading-relaxed text-ink-muted">
+          <ShieldCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-accent" />
+          <span>
+            No accounts, no tracking. Saved articles and language preferences stay in this browser. Feeds are fetched
+            through this app&apos;s server without storing your reading history.
+          </span>
         </p>
       </footer>
 

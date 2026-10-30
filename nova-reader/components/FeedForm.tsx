@@ -4,15 +4,8 @@
 // then calls onSubmit. The server checks the URL again.
 
 import { useState, type FormEvent } from "react";
-import { LoaderCircle, Rss } from "lucide-react";
+import { LoaderCircle, Rss, Search } from "lucide-react";
 import { validateFeedUrl } from "@/lib/validation";
-
-// Example feeds from independent blogs, so first-time users can try the app quickly.
-const EXAMPLE_FEEDS = [
-  { label: "Julia Evans (Atom)", url: "https://jvns.ca/atom.xml" },
-  { label: "Simon Willison (Atom)", url: "https://simonwillison.net/atom/everything/" },
-  { label: "Daring Fireball (RSS)", url: "https://daringfireball.net/feeds/main" },
-];
 
 type FeedFormProps = {
   onSubmit: (url: string) => void;
@@ -38,44 +31,42 @@ export function FeedForm({ onSubmit, isLoading }: FeedFormProps) {
     submit(value);
   }
 
-  function loadExample(url: string) {
-    setValue(url);
-    submit(url);
-  }
-
   return (
-    <form onSubmit={handleSubmit} noValidate className="rounded-2xl border border-line bg-surface p-4 sm:p-5">
+    <form onSubmit={handleSubmit} noValidate className="rounded-2xl border border-line bg-surface p-4 sm:p-6">
       <label htmlFor="feed-url" className="block text-sm font-semibold text-ink">
         RSS or Atom feed URL
       </label>
       <p id="feed-url-hint" className="mt-1 text-sm text-ink-muted">
-        Paste the address of a feed, for example https://jvns.ca/atom.xml
+        Paste any independent blog or publication feed address to read privately.
       </p>
 
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-        <input
-          id="feed-url"
-          name="feed-url"
-          type="url"
-          inputMode="url"
-          autoComplete="url"
-          spellCheck={false}
-          placeholder="https://example.com/feed.xml"
-          value={value}
-          onChange={(event) => {
-            setValue(event.target.value);
-            if (error) setError(null);
-          }}
-          aria-invalid={error ? true : undefined}
-          aria-describedby={error ? "feed-url-hint feed-url-error" : "feed-url-hint"}
-          className={`min-h-11 w-full rounded-lg border bg-bg px-3 text-base text-ink placeholder:text-ink-muted/70 ${
-            error ? "border-danger" : "border-line"
-          }`}
-        />
+      <div className="mt-3 flex flex-col gap-2.5 sm:flex-row">
+        <div className="relative min-w-0 flex-1">
+          <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-muted" />
+          <input
+            id="feed-url"
+            name="feed-url"
+            type="url"
+            inputMode="url"
+            autoComplete="url"
+            spellCheck={false}
+            placeholder="https://example.com/feed.xml"
+            value={value}
+            onChange={(event) => {
+              setValue(event.target.value);
+              if (error) setError(null);
+            }}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "feed-url-hint feed-url-error" : "feed-url-hint"}
+            className={`min-h-12 w-full rounded-xl border bg-bg py-2.5 pr-3.5 pl-10 text-base text-ink placeholder:text-ink-muted/70 transition-colors ${
+              error ? "border-danger" : "border-line focus:border-accent"
+            }`}
+          />
+        </div>
         <button
           type="submit"
           disabled={isLoading}
-          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-accent px-5 font-semibold text-white hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-60 dark:text-bg"
+          className="inline-flex min-h-12 shrink-0 items-center justify-center gap-2 rounded-xl bg-accent px-6 font-semibold text-accent-ink transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-60 whitespace-nowrap"
         >
           {isLoading ? (
             <LoaderCircle aria-hidden="true" className="size-4 animate-spin" />
@@ -87,25 +78,10 @@ export function FeedForm({ onSubmit, isLoading }: FeedFormProps) {
       </div>
 
       {error && (
-        <p id="feed-url-error" className="mt-2 text-sm font-medium text-danger">
+        <p id="feed-url-error" className="mt-2.5 text-sm font-medium text-danger">
           {error}
         </p>
       )}
-
-      <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-ink-muted">Try:</span>
-        {EXAMPLE_FEEDS.map((example) => (
-          <button
-            key={example.url}
-            type="button"
-            disabled={isLoading}
-            onClick={() => loadExample(example.url)}
-            className="rounded-full border border-line px-3 py-1 text-ink hover:border-accent hover:text-accent disabled:opacity-60"
-          >
-            {example.label}
-          </button>
-        ))}
-      </div>
     </form>
   );
 }

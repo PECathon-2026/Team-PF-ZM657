@@ -43,7 +43,7 @@ export function StatusMessage({ kind, message, action }: StatusMessageProps) {
         <button
           type="button"
           onClick={action.onClick}
-          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 font-medium text-ink hover:border-accent hover:text-accent"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-line bg-surface px-3.5 font-medium text-ink transition-colors hover:border-accent hover:text-accent"
         >
           <RotateCw aria-hidden="true" className="size-4" />
           {action.label}
